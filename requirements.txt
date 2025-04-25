@@ -1,0 +1,2 @@
+torch~=2.5.1+cpu
+tiktoken==0.9.0
