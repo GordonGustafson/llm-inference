@@ -1,9 +1,12 @@
 #include <cuda_runtime.h>
 #include <limits>
-#include <iostream>
 #include <stdio.h>
 #include <cmath>
 #include <algorithm>
+
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAException.h>
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -31,25 +34,24 @@ __device__ static inline float onlineSoftmaxSum(float const maxA,
     }
 }
 
-__global__ void flash_attention_kernel(float const* const Q_HBM,  // size Mxd
-                                       float const* const K_HBM,  // size Nxd
-                                       float const* const V_HBM,  // size Nxd
-                                       float* const O_HBM,        // size Mxd
-                                       int const M,
-                                       int const N,
-                                       int const d_model,
-                                       int const d_head,
-                                       int const num_heads,
-                                       float const temperature,
-                                       float* const row_sum_HBM,
-                                       float* const row_max_HBM,
-                                       int const maxSharedMemory) {
+__global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,  // size Nxd
+                                                       float const* const K_HBM,  // size Nxd
+                                                       float const* const V_HBM,  // size Nxd
+                                                       float* const O_HBM,        // size Nxd
+                                                       int const N,
+                                                       int const d_model,
+                                                       int const d_head,
+                                                       int const num_heads,
+                                                       float const temperature,
+                                                       float* const row_sum_HBM,
+                                                       float* const row_max_HBM,
+                                                       int const maxSharedMemory) {
     extern __shared__ float sharedMemory[];
     int const B_c = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)N);
     int const B_r = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)d_head);
     int const T_c = CEIL_DIV(N, B_c);
 
-    int const B_r_bounds_checked_for_last_row = min(B_r, M - blockIdx.x * B_r);
+    int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
 
     float* const Q = sharedMemory;
@@ -92,7 +94,7 @@ __global__ void flash_attention_kernel(float const* const Q_HBM,  // size Mxd
             }
             S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
 
-            int const row_index = blockIdx.y * M + blockIdx.x * B_r + B_r_index;
+            int const row_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
             float const S_row_old_global_max = row_max_HBM[row_index];
             float const S_row_old_global_sum = row_sum_HBM[row_index];
             __syncthreads();
@@ -135,13 +137,13 @@ __global__ void flash_attention_kernel(float const* const Q_HBM,  // size Mxd
 
 
 // Q, K, V, output are device pointers
-void solve(float const* const Q,  // size Mxd
-           float const* const K,  // size Nxd
-           float const* const V,  // size Nxd
-           float* const output,   // size Mxd
-           int const N,
-           int const d_model,
-           int const num_heads) {
+void causal_multihead_self_attention(float const* const Q,  // size Nxd
+                                     float const* const K,  // size Nxd
+                                     float const* const V,  // size Nxd
+                                     float* const output,   // size Nxd
+                                     int const N,
+                                     int const d_model,
+                                     int const num_heads) {
     int maxSharedMemory;
     gpuErrchk(cudaDeviceGetAttribute(&maxSharedMemory, cudaDevAttrMaxSharedMemoryPerBlock, 0));
     gpuErrchk(cudaFuncSetAttribute(flash_attention_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
@@ -170,9 +172,57 @@ void solve(float const* const Q,  // size Mxd
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c);
-    flash_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
+    causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
     gpuErrchk(cudaPeekAtLastError());
 
     delete[] zeroFloats;
     delete[] negativeInfinityFloats;
+}
+
+torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
+                                                    torch::Tensor K,
+                                                    torch::Tensor V,
+                                                    int num_heads) {
+    TORCH_CHECK(Q.is_cuda(), "Q must be a CUDA tensor");
+    TORCH_CHECK(K.is_cuda(), "K must be a CUDA tensor");
+    TORCH_CHECK(V.is_cuda(), "V must be a CUDA tensor");
+
+    TORCH_CHECK(Q.dtype() == torch::kFloat32, "Q must be float32");
+    TORCH_CHECK(K.dtype() == torch::kFloat32, "K must be float32");
+    TORCH_CHECK(V.dtype() == torch::kFloat32, "V must be float32");
+
+    TORCH_CHECK(Q.dim() == 2, "Q must be a 2D tensor");
+    TORCH_CHECK(K.dim() == 2, "K must be a 2D tensor");
+    TORCH_CHECK(V.dim() == 2, "V must be a 2D tensor");
+
+    int N = Q.size(0);
+    int d = Q.size(1);
+
+    TORCH_CHECK(K.size(0) == N, "K must have the same sequence length as Q");
+    TORCH_CHECK(V.size(0) == N, "V must have the same sequence length as Q");
+    TORCH_CHECK(K.size(1) == d, "K must have the same feature dimension as Q");
+    TORCH_CHECK(V.size(1) == d, "V must have the same feature dimension as Q");
+
+    torch::Tensor output = torch::empty({N, d}, Q.options());
+
+    // Call the kernel launcher
+    causal_multihead_self_attention(
+        Q.data_ptr<float>(),
+        K.data_ptr<float>(),
+        V.data_ptr<float>(),
+        output.data_ptr<float>(),
+        N, d, num_heads
+    );
+
+    return output;
+}
+
+TORCH_LIBRARY(causal_multihead_self_attention, m) {
+   // Note that "float" in the schema corresponds to the C++ double type
+   // and the Python float type.
+   m.def("causal_multihead_self_attention_torch(Tensor Q, Tensor K, Tensor V, int num_heads) -> Tensor");
+ }
+
+TORCH_LIBRARY_IMPL(causal_multihead_self_attention, CUDA, m) {
+  m.impl("causal_multihead_self_attention_torch", &causal_multihead_self_attention_torch);
 }
