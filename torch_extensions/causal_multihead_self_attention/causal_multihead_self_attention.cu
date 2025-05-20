@@ -104,6 +104,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
+            } else {
+                S[B_r_index * B_c + threadIdx.x] = 0.0f;
             }
 
             int const max_sum_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
