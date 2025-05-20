@@ -73,8 +73,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     }
 
     // Iterate horizontally through different S blocks.
-    for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
-        int const B_c_bounds_checked_for_last_column = min(B_c, N - T_c_index * B_c);
+    for (int T_c_index = 0; T_c_index <= blockIdx.x; T_c_index++) {
+        int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
+        int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V
         for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
             for (int B_c_index = 0; B_c_index < B_c_bounds_checked_for_last_column; B_c_index++) {
@@ -88,11 +89,23 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
 
         // Iterate vertically within the S block.
         for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
-            float S_val_for_thread = 0.0f;
-            for (int d_index = 0; d_index < d_head; d_index++) {
-                S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
+            bool const block_below_diagonal = T_c_index < blockIdx.x;
+            bool const block_on_diagonal = T_c_index == blockIdx.x;
+            int column_upper_bound;
+            if (block_below_diagonal) {
+                column_upper_bound = B_c_bounds_checked_for_last_column;
+            } else if (block_on_diagonal) {
+                column_upper_bound = min(B_c_bounds_checked_for_last_column, B_r_index + 1);
+            } else {
+                column_upper_bound = 0;
             }
-            S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
+            if (threadIdx.x < column_upper_bound) {
+                float S_val_for_thread = 0.0f;
+                for (int d_index = 0; d_index < d_head; d_index++) {
+                    S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
+                }
+                S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
+            }
 
             int const row_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
             float const S_row_old_global_max = row_max_HBM[row_index];
@@ -103,7 +116,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             if (threadIdx.x == 0) {
                 float S_row_local_max = -INFINITY;
                 float S_row_local_sum = 0.0f;
-                for (int col = 0; col < B_c_bounds_checked_for_last_column; col++) {
+                for (int col = 0; col < column_upper_bound; col++) {
                     float const S_val_iter = S[B_r_index * B_c + col];
                     S_row_local_sum = onlineSoftmaxSum(S_row_local_max, S_row_local_sum, S_val_iter, 1.0f);
                     S_row_local_max = max(S_row_local_max, S_val_iter);
@@ -121,7 +134,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             // Compute P and O
             for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
                 float PV_val = 0.0f;
-                for (int V_B_c_index = 0; V_B_c_index < B_c_bounds_checked_for_last_column; V_B_c_index++) {
+                for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
                     float const S_val = S[B_r_index * B_c + V_B_c_index];
                     float const P_val = expf(S_val - S_row_new_global_max) / S_row_new_global_sum;
                     PV_val += P_val * V[V_B_c_index * d_head + d_index];
