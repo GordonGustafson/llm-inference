@@ -106,9 +106,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
             }
 
-            int const row_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
-            float const S_row_old_global_max = row_max_HBM[row_index];
-            float const S_row_old_global_sum = row_sum_HBM[row_index];
+            int const max_sum_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
+            float const S_row_old_global_max = row_max_HBM[max_sum_index];
+            float const S_row_old_global_sum = row_sum_HBM[max_sum_index];
             __syncthreads();
 
             // Update max and sum for this row.
@@ -120,15 +120,15 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     S_row_local_sum = onlineSoftmaxSum(S_row_local_max, S_row_local_sum, S_val_iter, 1.0f);
                     S_row_local_max = max(S_row_local_max, S_val_iter);
                 }
-                row_sum_HBM[row_index] = onlineSoftmaxSum(S_row_old_global_max,
+                row_sum_HBM[max_sum_index] = onlineSoftmaxSum(S_row_old_global_max,
                                                           S_row_old_global_sum,
                                                           S_row_local_max,
                                                           S_row_local_sum);
-                row_max_HBM[row_index] = max(S_row_old_global_max, S_row_local_max);
+                row_max_HBM[max_sum_index] = max(S_row_old_global_max, S_row_local_max);
             }
             __syncthreads();
-            float const S_row_new_global_max = row_max_HBM[row_index];
-            float const S_row_new_global_sum = row_sum_HBM[row_index];
+            float const S_row_new_global_max = row_max_HBM[max_sum_index];
+            float const S_row_new_global_sum = row_sum_HBM[max_sum_index];
 
             // Compute P and O
             for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
@@ -214,6 +214,8 @@ torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
     TORCH_CHECK(V.size(0) == N, "V must have the same sequence length as Q");
     TORCH_CHECK(K.size(1) == d, "K must have the same feature dimension as Q");
     TORCH_CHECK(V.size(1) == d, "V must have the same feature dimension as Q");
+
+    TORCH_CHECK(d % num_heads == 0, "Feature dimension of Q must be evenly divisible by the number of heads");
 
     torch::Tensor output = torch::empty({N, d}, Q.options());
 
