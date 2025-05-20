@@ -49,7 +49,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     extern __shared__ float sharedMemory[];
     int const B_c = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)N);
     int const B_r = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)d_head);
-    int const T_c = CEIL_DIV(N, B_c);
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
@@ -195,7 +194,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
                                                     torch::Tensor K,
                                                     torch::Tensor V,
-                                                    int num_heads) {
+                                                    int64_t num_heads) {
     TORCH_CHECK(Q.is_cuda(), "Q must be a CUDA tensor");
     TORCH_CHECK(K.is_cuda(), "K must be a CUDA tensor");
     TORCH_CHECK(V.is_cuda(), "V must be a CUDA tensor");
@@ -224,7 +223,7 @@ torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
         K.data_ptr<float>(),
         V.data_ptr<float>(),
         output.data_ptr<float>(),
-        N, d, num_heads
+        N, d, (int)num_heads
     );
 
     return output;
