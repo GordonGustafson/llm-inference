@@ -49,6 +49,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     extern __shared__ float sharedMemory[];
     int const B_c = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)N);
     int const B_r = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)d_head);
+    int const T_c = CEIL_DIV(N, B_c);
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
@@ -71,9 +72,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         }
     }
 
-    // Iterate horizontally through different S blocks, stopping when we hit the diagonal block,
-    // since blocks after are only needed for non-causal self attention.
-    for (int T_c_index = 0; T_c_index <= blockIdx.x; T_c_index++) {
+    // Iterate horizontally through different S blocks.
+    for (int T_c_index = 0; T_c_index <= T_c; T_c_index++) {
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V
@@ -89,16 +89,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
 
         // Iterate vertically within the S block.
         for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
-            bool const block_below_diagonal = T_c_index < blockIdx.x;
-            bool const block_on_diagonal = T_c_index == blockIdx.x;
-            int column_upper_bound;
-            if (block_below_diagonal) {
-                column_upper_bound = B_c_bounds_checked_for_last_column;
-            } else if (block_on_diagonal) {
-                column_upper_bound = min(B_c_bounds_checked_for_last_column, B_r_index + 1);
-            } else {
-                column_upper_bound = 0;
-            }
+            int const row_absolute = B_r * blockIdx.x + B_r_index;
+            int const column_upper_bound_absolute = row_absolute + 1;
+            int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * T_c;
+            int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
             if (threadIdx.x < column_upper_bound) {
                 float S_val_for_thread = 0.0f;
                 for (int d_index = 0; d_index < d_head; d_index++) {
