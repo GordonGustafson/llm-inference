@@ -71,7 +71,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         }
     }
 
-    // Iterate horizontally through different S blocks.
+    // Iterate horizontally through different S blocks, stopping when we hit the diagonal block,
+    // since blocks after are only needed for non-causal self attention.
     for (int T_c_index = 0; T_c_index <= blockIdx.x; T_c_index++) {
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
@@ -104,8 +105,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
-            } else {
-                S[B_r_index * B_c + threadIdx.x] = 0.0f;
             }
 
             int const max_sum_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
@@ -174,7 +173,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     float* row_max_HBM;
     gpuErrchk(cudaMalloc((void**)&row_max_HBM, sumMaxSizeBytes));
 
-    float* zeroFloats = new float[N* max(d_model, num_heads)]();
+    float* zeroFloats = new float[N * max(d_model, num_heads)]();
     gpuErrchk(cudaMemcpy(output, zeroFloats, N * d_model * sizeof(float), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(row_sum_HBM, zeroFloats, sumMaxSizeBytes, cudaMemcpyHostToDevice));
 
