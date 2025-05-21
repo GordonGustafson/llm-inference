@@ -11,7 +11,7 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                  keys: torch.Tensor,
                                  values: torch.Tensor,
                                  num_heads: int,
-                                 causal_mask: torch.Tensor):
+                                 causal_mask: torch.Tensor) -> torch.Tensor:
     match backend:
         case ScaledDotProductAttentionBackend.NAIVE_PYTORCH:
             return scaled_dot_product_attention_naive_pytorch(queries=queries,
@@ -27,7 +27,7 @@ def scaled_dot_product_attention_naive_pytorch(queries: torch.Tensor,
                                                keys: torch.Tensor,
                                                values: torch.Tensor,
                                                num_heads: int,
-                                               causal_mask: torch.Tensor):
+                                               causal_mask: torch.Tensor) -> torch.Tensor:
     batch_size, context_length, model_dim = queries.shape
     if model_dim % num_heads != 0:
         raise ValueError("Query dimensionality must be evenly divisible by number of heads.")
@@ -44,6 +44,7 @@ def scaled_dot_product_attention_naive_pytorch(queries: torch.Tensor,
     context_vectors = attention_weights @ values      # (batch_size, num_heads, context_length, head_dim)
     context_vectors = context_vectors.transpose(1, 2)  # (batch_size, context_length, num_heads, head_dim)
     context_vectors = context_vectors.contiguous().view(batch_size, context_length, num_heads * head_dim)
+    return context_vectors
 
 
 class CausalSelfAttention(nn.Module):
