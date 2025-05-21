@@ -188,6 +188,15 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
     gpuErrchk(cudaPeekAtLastError());
 
+    std::cout << "T_r: " << T_r << std::endl;
+    std::cout << "num_heads: " << num_heads << std::endl;
+    std::cout << "B_c: " << B_c << std::endl;
+    std::cout << "B_r: " << B_r << std::endl;
+    std::cout << "N: " << N << std::endl;
+    std::cout << "d_model: " << d_model << std::endl;
+    std::cout << "d_head: " << d_head << std::endl;
+    std::cout << "num_heads: " << num_heads << std::endl;
+
     float* rowSum = new float[N*num_heads]();
     float* rowMax = new float[N*num_heads]();
     gpuErrchk(cudaMemcpy(rowSum, row_sum_HBM, N * sizeof(float), cudaMemcpyDeviceToHost));
