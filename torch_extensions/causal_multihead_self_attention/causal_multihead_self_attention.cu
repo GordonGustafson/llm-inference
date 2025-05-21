@@ -123,9 +123,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     S_row_local_max = max(S_row_local_max, S_val_iter);
                 }
                 row_sum_HBM[max_sum_index] = onlineSoftmaxSum(S_row_old_global_max,
-                                                          S_row_old_global_sum,
-                                                          S_row_local_max,
-                                                          S_row_local_sum);
+                                                              S_row_old_global_sum,
+                                                              S_row_local_max,
+                                                              S_row_local_sum);
                 row_max_HBM[max_sum_index] = max(S_row_old_global_max, S_row_local_max);
             }
             __syncthreads();
@@ -188,6 +188,15 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     dim3 const threadsPerBlock(B_c);
     causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
     gpuErrchk(cudaPeekAtLastError());
+
+    float* rowSum = new float[N*num_heads]();
+    float* rowMax = new float[N*num_heads]();
+    gpuErrchk(cudaMemcpy(rowSum, row_sum_HBM, N * sizeof(float), cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(rowMax, row_max_HBM, N * sizeof(float), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < N*num_heads; i++) {
+        std::cout << "rowSum[" << i << "]: " << rowSum[i] << std::endl;
+        std::cout << "rowMax[" << i << "]: " << rowMax[i] << std::endl;
+    }
 
     delete[] zeroFloats;
     delete[] negativeInfinityFloats;
