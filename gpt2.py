@@ -1,5 +1,6 @@
 from sampler import GreedySampler
 from transformer_block import TransformerBlock
+from causal_self_attention import ScaledDotProductAttentionBackend
 from tokenizer import GPT2Tokenizer
 
 from huggingface_hub import hf_hub_download
@@ -54,6 +55,7 @@ class GPT2(nn.Module):
 
 if __name__ == "__main__":
     GPT_CONFIG_124M = {
+        "scaled_dot_product_attention_backend": ScaledDotProductAttentionBackend.NAIVE_PYTORCH,
         "vocab_size": 50257,     # Vocabulary size
         "context_length": 1024,  # Context length
         "emb_dim": 768,          # Embedding dimension

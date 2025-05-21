@@ -16,6 +16,7 @@ class TransformerBlock(nn.Module):
             p_dropout=config["drop_rate"],
             num_heads=config["n_heads"],
             qkv_bias=config["qkv_bias"],
+            scaled_dot_product_attention_backend=config["scaled_dot_product_attention_backend"],
         )
         self.first_dropout = nn.Dropout(p=config["drop_rate"])
         self.second_layer_norm = nn.LayerNorm(config["emb_dim"])
