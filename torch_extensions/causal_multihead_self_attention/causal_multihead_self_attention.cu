@@ -10,7 +10,7 @@
 
 // Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration
 #include <pybind11/pybind11.h>
-PYBIND11_MODULE("_C", m) {}
+PYBIND11_MODULE(_C, m) {}
 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
