@@ -8,6 +8,29 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 
+#include <Python.h>
+
+// Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration
+extern "C" {
+  /* Creates a dummy empty _C module that can be imported from Python.
+    The import from Python will load the .so consisting of this file
+    in this extension, so that the TORCH_LIBRARY static initializers
+    below are run. */
+  PyObject* PyInit__C(void)
+  {
+      static struct PyModuleDef module_def = {
+          PyModuleDef_HEAD_INIT,
+          "_C",   /* name of module */
+          NULL,   /* module documentation, may be NULL */
+          -1,     /* size of per-interpreter state of the module,
+                    or -1 if the module keeps state in global variables. */
+          NULL,   /* methods */
+      };
+      return PyModule_Create(&module_def);
+  }
+}
+
+
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
