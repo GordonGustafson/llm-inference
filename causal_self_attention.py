@@ -25,9 +25,9 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                                               causal_mask=causal_mask)
         case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
             # TODO: support batch size > 1
-            return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(),
-                                                                                                   K=keys.squeeze(),
-                                                                                                   V=values.squeeze(),
+            return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(0),
+                                                                                                   K=keys.squeeze(0),
+                                                                                                   V=values.squeeze(0),
                                                                                                    num_heads=num_heads).unsqueeze(0)
         case _:
             raise ValueError("Backend not implemented yet")
