@@ -24,8 +24,9 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 namespace causal_multihead_self_attention {
 
-// Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration
-PYBIND11_MODULE(_C, m) {}
+// Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration,
+// tweaked with https://stackoverflow.com/a/76669141.
+PYBIND11_MODULE(causal_multihead_self_attention, m) {}
 
 __device__ static inline float onlineSoftmaxSum(float const maxA,
                                                 float const sumA,
