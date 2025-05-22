@@ -65,10 +65,11 @@ if __name__ == "__main__":
         "qkv_bias": True,        # Query-Key-Value bias
     }
 
-    device = torch.device("cpu")
+    device = torch.device("cuda")
     model = GPT2(GPT_CONFIG_124M)
     model.eval()
     model.load_weights_from_huggingface("openai-community/gpt2")
+    model.to(device)
 
     tokenizer = GPT2Tokenizer()
     sampler = GreedySampler()
