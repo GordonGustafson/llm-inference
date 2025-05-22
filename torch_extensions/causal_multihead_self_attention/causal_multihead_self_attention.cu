@@ -202,8 +202,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     float* rowSum = new float[N*num_heads]();
     float* rowMax = new float[N*num_heads]();
-    gpuErrchk(cudaMemcpy(rowSum, row_sum_HBM, N * sizeof(float), cudaMemcpyDeviceToHost));
-    gpuErrchk(cudaMemcpy(rowMax, row_max_HBM, N * sizeof(float), cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(rowSum, row_sum_HBM, N * num_heads * sizeof(float), cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(rowMax, row_max_HBM, N * num_heads * sizeof(float), cudaMemcpyDeviceToHost));
     for (int i = 0; i < N*num_heads; i++) {
         std::cout << "rowSum[" << i << "]: " << rowSum[i] << std::endl;
         std::cout << "rowMax[" << i << "]: " << rowMax[i] << std::endl;
