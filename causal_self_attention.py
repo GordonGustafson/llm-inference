@@ -2,6 +2,10 @@ import torch
 from torch import nn
 from enum import Enum
 
+# Import custom torch extension that contains
+# torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch
+import causal_multihead_self_attention
+
 class ScaledDotProductAttentionBackend(Enum):
     NAIVE_PYTORCH = "NAIVE_PYTORCH"
     CUSTOM_CUDA = "CUSTOM_CUDA"
@@ -19,6 +23,12 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                                               values=values,
                                                               num_heads=num_heads,
                                                               causal_mask=causal_mask)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
+            # TODO: support batch size > 1
+            return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(),
+                                                                                                   K=keys.squeeze(),
+                                                                                                   V=values.squeeze(),
+                                                                                                   num_heads=num_heads)
         case _:
             raise ValueError("Backend not implemented yet")
 
