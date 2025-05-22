@@ -8,9 +8,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 
-// Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration
 #include <pybind11/pybind11.h>
-PYBIND11_MODULE(_C, m) {}
 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -23,6 +21,11 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 #define CEIL_DIV(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
+
+namespace causal_multihead_self_attention {
+
+// Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration
+PYBIND11_MODULE(_C, m) {}
 
 __device__ static inline float onlineSoftmaxSum(float const maxA,
                                                 float const sumA,
@@ -257,4 +260,6 @@ TORCH_LIBRARY(causal_multihead_self_attention, m) {
 
 TORCH_LIBRARY_IMPL(causal_multihead_self_attention, CUDA, m) {
   m.impl("causal_multihead_self_attention_torch", &causal_multihead_self_attention_torch);
+}
+
 }
