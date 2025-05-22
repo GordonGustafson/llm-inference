@@ -100,7 +100,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
             int const row_absolute = B_r * blockIdx.x + B_r_index;
             int const column_upper_bound_absolute = row_absolute + 1;
-            int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * T_c;
+            int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
             if (threadIdx.x < column_upper_bound) {
                 float S_val_for_thread = 0.0f;
