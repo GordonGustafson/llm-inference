@@ -28,7 +28,7 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
             return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(),
                                                                                                    K=keys.squeeze(),
                                                                                                    V=values.squeeze(),
-                                                                                                   num_heads=num_heads)
+                                                                                                   num_heads=num_heads).unsqueeze(0)
         case _:
             raise ValueError("Backend not implemented yet")
 
