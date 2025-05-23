@@ -68,11 +68,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     float* const V = K + B_c * d_head;
     float* const S = V + B_c * d_head;
 
-    // Initialize S, using threadIdx.x as the B_c dimension.
-    for (int B_r_index = 0; B_r_index < B_r; B_r_index++) {
-        S[B_r_index * B_c + threadIdx.x] = 0.0f;
-    }
-
     // Load Q, using threadIdx.x to help along the d_head dimension
     for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
         for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
