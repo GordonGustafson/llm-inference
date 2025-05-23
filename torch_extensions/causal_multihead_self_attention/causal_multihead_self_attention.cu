@@ -96,12 +96,14 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         __syncthreads();
 
         // Iterate vertically within the S block.
-        for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
+        // Since we use __syncthreads in this loop we have to make sure threads don't exit the function early.
+        for (int B_r_index = threadIdx.y; B_r_index < CEIL_DIV(B_r_bounds_checked_for_last_row, blockDim.y) * blockDim.y; B_r_index += blockDim.y) {
+            bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
             int const row_absolute = B_r * blockIdx.x + B_r_index;
             int const column_upper_bound_absolute = row_absolute + 1;
             int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
-            if (threadIdx.x < column_upper_bound) {
+            if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 for (int d_index = 0; d_index < d_head; d_index++) {
                     S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
@@ -110,12 +112,16 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             }
 
             int const max_sum_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
-            float const S_row_old_global_max = row_max_HBM[max_sum_index];
-            float const S_row_old_global_sum = row_sum_HBM[max_sum_index];
+            float S_row_old_global_max;
+            float S_row_old_global_sum;
+            if (row_in_bounds) {
+                S_row_old_global_max = row_max_HBM[max_sum_index];
+                S_row_old_global_sum = row_sum_HBM[max_sum_index];
+            }
             __syncthreads();
 
             // Update max and sum for this row.
-            if (threadIdx.x == 0) {
+            if (threadIdx.x == 0 && row_in_bounds) {
                 float S_row_local_max = -INFINITY;
                 float S_row_local_sum = 0.0f;
                 for (int col = 0; col < column_upper_bound; col++) {
@@ -130,21 +136,24 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 row_max_HBM[max_sum_index] = max(S_row_old_global_max, S_row_local_max);
             }
             __syncthreads();
-            float const S_row_new_global_max = row_max_HBM[max_sum_index];
-            float const S_row_new_global_sum = row_sum_HBM[max_sum_index];
 
-            // Compute P and O
-            for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
-                float PV_val = 0.0f;
-                for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
-                    float const S_val = S[B_r_index * B_c + V_B_c_index];
-                    float const P_val = expf(S_val - S_row_new_global_max) / S_row_new_global_sum;
-                    PV_val += P_val * V[V_B_c_index * d_head + d_index];
+            if (row_in_bounds) {
+                float const S_row_new_global_max = row_max_HBM[max_sum_index];
+                float const S_row_new_global_sum = row_sum_HBM[max_sum_index];
+
+                // Compute P and O
+                for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
+                    float PV_val = 0.0f;
+                    for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
+                        float const S_val = S[B_r_index * B_c + V_B_c_index];
+                        float const P_val = expf(S_val - S_row_new_global_max) / S_row_new_global_sum;
+                        PV_val += P_val * V[V_B_c_index * d_head + d_index];
+                    }
+
+                    int const row_index = blockIdx.x * B_r + B_r_index;
+                    int const OIndexForThread = row_index * d_model + d_min_for_head + d_index;
+                    O_HBM[OIndexForThread] = O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * (S_row_old_global_sum / S_row_new_global_sum) + PV_val;
                 }
-
-                int const row_index = blockIdx.x * B_r + B_r_index;
-                int const OIndexForThread = row_index * d_model + d_min_for_head + d_index;
-                O_HBM[OIndexForThread] = O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * (S_row_old_global_sum / S_row_new_global_sum) + PV_val;
             }
         }
     }
