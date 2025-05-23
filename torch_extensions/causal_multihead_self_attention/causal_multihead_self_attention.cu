@@ -229,6 +229,10 @@ torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
     TORCH_CHECK(K.dim() == 2, "K must be a 2D tensor");
     TORCH_CHECK(V.dim() == 2, "V must be a 2D tensor");
 
+    TORCH_CHECK(Q.is_contiguous(), "Q must be contiguous")
+    TORCH_CHECK(K.is_contiguous(), "K must be contiguous")
+    TORCH_CHECK(V.is_contiguous(), "V must be contiguous")
+
     int N = Q.size(0);
     int d = Q.size(1);
 
