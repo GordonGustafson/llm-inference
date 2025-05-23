@@ -211,6 +211,9 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     }
 #endif
 
+    gpuErrchk(cudaFree(row_sum_HBM));
+    gpuErrchk(cudaFree(row_max_HBM));
+
     delete[] zeroFloats;
     delete[] negativeInfinityFloats;
 }
