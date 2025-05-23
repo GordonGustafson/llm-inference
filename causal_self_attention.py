@@ -25,6 +25,10 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                                               causal_mask=causal_mask)
         case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
             # TODO: support batch size > 1
+            # Custom Cuda backend currently requires contiguous tensors.
+            queries = queries.contiguous()
+            keys = keys.contiguous()
+            values = values.contiguous()
             return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(0),
                                                                                                    K=keys.squeeze(0),
                                                                                                    V=values.squeeze(0),
@@ -50,11 +54,6 @@ def scaled_dot_product_attention_naive_pytorch(queries: torch.Tensor,
     attention_scores = queries @ keys.transpose(2, 3)  # (batch_size, num_heads, context_length, context_length)
     attention_scores.masked_fill_(causal_mask.bool()[:context_length, :context_length], -torch.inf)
     attention_weights = torch.softmax(attention_scores / (head_dim ** 0.5), dim=3)
-
-    # Custom Cuda backend currently requires contiguous tensors.
-    queries = queries.contiguous()
-    keys = keys.contiguous()
-    values = values.contiguous()
 
     context_vectors = attention_weights @ values      # (batch_size, num_heads, context_length, head_dim)
     context_vectors = context_vectors.transpose(1, 2)  # (batch_size, context_length, num_heads, head_dim)
