@@ -10,6 +10,8 @@
 
 #include <pybind11/pybind11.h>
 
+#define ROWS_PER_BLOCK 16
+
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -68,9 +70,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     float* const V = K + B_c * d_head;
     float* const S = V + B_c * d_head;
 
-    // Load Q, using threadIdx.x to help along the d_head dimension
+    // Load Q, using threadIdx.x to help along the d_head dimension (for memory coalescing) and
+    // threadIdx.y to help along the B_r dimension.
     for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
-        for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
+        for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
             Q[B_r_index * d_head + d_index] = Q_HBM[row_index * d_model + d_min_for_head + d_index];
         }
@@ -80,9 +83,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     for (int T_c_index = 0; T_c_index <= T_c; T_c_index++) {
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
-        // Load K and V
+        // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
+        // threadIdx.y to help along the B_c dimension.
         for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
-            for (int B_c_index = 0; B_c_index < B_c_bounds_checked_for_last_column; B_c_index++) {
+            for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
                 K[B_c_index * d_head + d_index] = K_HBM[row_index * d_model + d_min_for_head + d_index];
                 V[B_c_index * d_head + d_index] = V_HBM[row_index * d_model + d_min_for_head + d_index];
@@ -92,7 +96,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         __syncthreads();
 
         // Iterate vertically within the S block.
-        for (int B_r_index = 0; B_r_index < B_r_bounds_checked_for_last_row; B_r_index++) {
+        for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_absolute = B_r * blockIdx.x + B_r_index;
             int const column_upper_bound_absolute = row_absolute + 1;
             int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
@@ -182,7 +186,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     float const temperature = sqrt(d_head);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(B_c);
+    dim3 const threadsPerBlock(B_c, ROWS_PER_BLOCK);
     causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
     gpuErrchk(cudaPeekAtLastError());
 
