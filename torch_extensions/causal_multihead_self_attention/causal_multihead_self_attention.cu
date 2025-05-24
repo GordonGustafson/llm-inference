@@ -64,10 +64,13 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
+    // For alleviating shared memory bank conflicts
+    int const K_row_length = d_head + 1;
+
 
     float* const Q = sharedMemory;
     float* const K = Q + B_r * d_head;
-    float* const V = K + B_c * d_head;
+    float* const V = K + B_c * K_row_length;
     float* const S = V + B_c * d_head;
 
     // Load Q, using threadIdx.x to help along the d_head dimension (for memory coalescing) and
@@ -88,7 +91,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                K[B_c_index * d_head + d_index] = K_HBM[row_index * d_model + d_min_for_head + d_index];
+                K[B_c_index * K_row_length + d_index] = K_HBM[row_index * d_model + d_min_for_head + d_index];
                 V[B_c_index * d_head + d_index] = V_HBM[row_index * d_model + d_min_for_head + d_index];
             }
         }
@@ -106,7 +109,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 for (int d_index = 0; d_index < d_head; d_index++) {
-                    S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * d_head + d_index];
+                    S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * K_row_length + d_index];
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
             }
@@ -196,7 +199,11 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, min(MAX_THREADS_PER_BLOCK_Y, B_r));
-    int const sharedMemoryBytes = ((B_r + 2 * B_c) * d_head + B_r * B_c) * sizeof(float);
+    int const sharedMemoryBytes = (B_r * d_head          // Q
+                                   + B_c * (d_head + 1)  // K
+                                   + B_c * d_head        // V
+                                   + B_r * B_c)          // S
+                                  * sizeof(float);
     causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, B_c, B_r);
     gpuErrchk(cudaPeekAtLastError());
 
