@@ -10,7 +10,8 @@
 
 #include <pybind11/pybind11.h>
 
-#define ROWS_PER_BLOCK 16
+int const MAX_THREADS_PER_BLOCK_Y = 16;
+int const SHARED_MEMORY_REDUCTION_FACTOR = 2;
 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -56,10 +57,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                                                        float const temperature,
                                                        float* const row_sum_HBM,
                                                        float* const row_max_HBM,
-                                                       int const maxSharedMemory) {
+                                                       int const B_c,
+                                                       int const B_r) {
     extern __shared__ float sharedMemory[];
-    int const B_c = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)N);
-    int const B_r = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)d_head);
     int const T_c = CEIL_DIV(N, B_c);
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
@@ -174,8 +174,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     int const d_head = d_model / num_heads;
 
-    int const B_c = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)N);
-    int const B_r = min(CEIL_DIV(maxSharedMemory, 4 * d_head * sizeof(float)), (unsigned long)d_head);
+    int const B_c = min(CEIL_DIV(maxSharedMemory, SHARED_MEMORY_REDUCTION_FACTOR * 4 * d_head * sizeof(float)), (unsigned long)N);
+    int const B_r = min(CEIL_DIV(maxSharedMemory, SHARED_MEMORY_REDUCTION_FACTOR * 4 * d_head * sizeof(float)), (unsigned long)d_head);
     int const T_r = CEIL_DIV(N, B_r);
 
     int const sumMaxSizeBytes = N * num_heads * sizeof(float);
@@ -195,8 +195,9 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     float const temperature = sqrt(d_head);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(B_c, ROWS_PER_BLOCK);
-    causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, maxSharedMemory>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, maxSharedMemory);
+    dim3 const threadsPerBlock(B_c, min(MAX_THREADS_PER_BLOCK_Y, B_r));
+    int const sharedMemoryBytes = ((B_r + 2 * B_c) * d_head + B_r * B_c) * sizeof(float);
+    causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, row_sum_HBM, row_max_HBM, B_c, B_r);
     gpuErrchk(cudaPeekAtLastError());
 
 #ifdef DEBUG
