@@ -179,7 +179,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int const d_head = d_model / num_heads;
 
     int const B_c = min(32, N);
-    int const B_r = (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + B_c);
+    int const B_r = min(B_c, (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + B_c));
     int const T_r = CEIL_DIV(N, B_r);
 
     int const sumMaxSizeBytes = N * num_heads * sizeof(float);
@@ -199,7 +199,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     float const temperature = sqrt(d_head);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(B_c, min(MAX_THREADS_PER_BLOCK_Y, B_r));
+    dim3 const threadsPerBlock(B_c, B_r);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 1)  // K
                                    + B_c * d_head        // V
