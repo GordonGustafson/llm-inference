@@ -10,7 +10,7 @@
 
 #include <pybind11/pybind11.h>
 
-int const MAX_THREADS_PER_BLOCK_Y = 16;
+int const MAX_THREADS_PER_BLOCK_Y = 32;
 int const SHARED_MEMORY_REDUCTION_FACTOR = 2;
 
 
