@@ -9,6 +9,8 @@ from safetensors_utils import assign_weight_and_bias
 import torch
 from torch import nn
 
+import time
+
 def _assign_transformer_block(block: TransformerBlock, safetensors_object: safe_open, block_index: int) -> None:
     assign_weight_and_bias(block.first_layer_norm, safetensors_object, f"h.{block_index}.ln_1")
 
@@ -73,6 +75,18 @@ if __name__ == "__main__":
 
     tokenizer = GPT2Tokenizer()
     sampler = GreedySampler()
-    result = sampler.sample(model, "Hello, I'm a language model,", 50, tokenizer, device)
+
+    print("Executing first run...")
+    start_time_ns = time.perf_counter_ns()
+    result = sampler.sample(model, "Hello, I'm a language model,", 500, tokenizer, device)
+    end_time_ns = time.perf_counter_ns()
     print(result)
+    print(f"time elapsed by first run: {(end_time_ns - start_time_ns) / (10 ** 9)} seconds")
+
+    print("Executing second run...")
+    start_time_ns = time.perf_counter_ns()
+    result = sampler.sample(model, "Hello, I'm a language model,", 500, tokenizer, device)
+    end_time_ns = time.perf_counter_ns()
+    print(result)
+    print(f"time elapsed by second run: {(end_time_ns - start_time_ns) / (10 ** 9)} seconds")
 
