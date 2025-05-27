@@ -174,11 +174,12 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int maxSharedMemory;
     gpuErrchk(cudaDeviceGetAttribute(&maxSharedMemory, cudaDevAttrMaxSharedMemoryPerBlock, 0));
     gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
+    int const maxFloatsInSharedMemory = maxSharedMemory / sizeof(float);
 
     int const d_head = d_model / num_heads;
 
-    int const B_c = min(CEIL_DIV(maxSharedMemory, SHARED_MEMORY_REDUCTION_FACTOR * 4 * d_head * sizeof(float)), (unsigned long)N);
-    int const B_r = min(CEIL_DIV(maxSharedMemory, SHARED_MEMORY_REDUCTION_FACTOR * 4 * d_head * sizeof(float)), (unsigned long)d_head);
+    int const B_c = min(32, N);
+    int const B_r = (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + B_c);
     int const T_r = CEIL_DIV(N, B_r);
 
     int const sumMaxSizeBytes = N * num_heads * sizeof(float);
