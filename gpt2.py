@@ -56,21 +56,25 @@ class GPT2(nn.Module):
 
 
 if __name__ == "__main__":
-    GPT_CONFIG_124M = {
+    _COMMON_GPT_CONFIG = {
         "scaled_dot_product_attention_backend": ScaledDotProductAttentionBackend.CUSTOM_CUDA,
-        "vocab_size": 50257,     # Vocabulary size
+        "vocab_size": 50257,  # Vocabulary size
         "context_length": 1024,  # Context length
-        "emb_dim": 768,          # Embedding dimension
-        "n_heads": 12,           # Number of attention heads
-        "n_layers": 12,          # Number of layers
-        "drop_rate": 0.1,        # Dropout rate
-        "qkv_bias": True,        # Query-Key-Value bias
+        "drop_rate": 0.1,  # Dropout rate
+        "qkv_bias": True,  # Query-Key-Value bias
+    }
+    HF_NAME_TO_GPT_CONFIG = {
+        "openai-community/gpt2":        {**_COMMON_GPT_CONFIG, **{"emb_dim": 768,  "n_heads": 12, "n_layers": 12}},
+        "openai-community/gpt2-medium": {**_COMMON_GPT_CONFIG, **{"emb_dim": 1024, "n_heads": 16, "n_layers": 24}},
+        "openai-community/gpt2-large":  {**_COMMON_GPT_CONFIG, **{"emb_dim": 1280, "n_heads": 20, "n_layers": 36}},
+        "openai-community/gpt2-xl":     {**_COMMON_GPT_CONFIG, **{"emb_dim": 1600, "n_heads": 25, "n_layers": 48}},
     }
 
-    device = torch.device("cuda")
-    model = GPT2(GPT_CONFIG_124M)
+    hf_name = "openai-community/gpt2"
+    model = GPT2(HF_NAME_TO_GPT_CONFIG[hf_name])
     model.eval()
-    model.load_weights_from_huggingface("openai-community/gpt2")
+    model.load_weights_from_huggingface(hf_name)
+    device = torch.device("cuda")
     model.to(device)
 
     tokenizer = GPT2Tokenizer()
