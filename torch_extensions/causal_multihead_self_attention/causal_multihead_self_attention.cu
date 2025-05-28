@@ -47,16 +47,16 @@ __device__ static inline float onlineSoftmaxSum(float const maxA,
 }
 
 template <int d_head>
-__global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,  // size Nxd
-                                                       float const* const K_HBM,  // size Nxd
-                                                       float const* const V_HBM,  // size Nxd
-                                                       float* const O_HBM,        // size Nxd
+__global__ void causal_multihead_self_attention_kernel(float const* const __restrict__ Q_HBM,  // size Nxd
+                                                       float const* const __restrict__ K_HBM,  // size Nxd
+                                                       float const* const __restrict__ V_HBM,  // size Nxd
+                                                       float* const __restrict__ O_HBM,        // size Nxd
                                                        int const N,
                                                        int const d_model,
                                                        int const num_heads,
                                                        float const temperature,
-                                                       float* const row_sum_HBM,
-                                                       float* const row_max_HBM,
+                                                       float* const __restrict__ row_sum_HBM,
+                                                       float* const __restrict__ row_max_HBM,
                                                        int const B_c,
                                                        int const B_r) {
     extern __shared__ float sharedMemory[];
