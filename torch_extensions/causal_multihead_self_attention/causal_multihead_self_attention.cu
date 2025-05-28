@@ -66,10 +66,11 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     int const d_min_for_head = blockIdx.y * d_head;
     // For alleviating shared memory bank conflicts
     int const K_row_length = d_head + 1;
+    int const Q_row_length = d_head + 1;
 
 
     float* const Q = sharedMemory;
-    float* const K = Q + B_r * d_head;
+    float* const K = Q + B_r * Q_row_length;
     float* const V = K + B_c * K_row_length;
     float* const S = V + B_c * d_head;
 
@@ -78,7 +79,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
-            Q[B_r_index * d_head + d_index] = Q_HBM[row_index * d_model + d_min_for_head + d_index];
+            Q[B_r_index * Q_row_length + d_index] = Q_HBM[row_index * d_model + d_min_for_head + d_index];
         }
     }
 
@@ -109,7 +110,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 for (int d_index = 0; d_index < d_head; d_index++) {
-                    S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * K_row_length + d_index];
+                    S_val_for_thread += Q[B_r_index * Q_row_length + d_index] * K[threadIdx.x * K_row_length + d_index];
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
             }
@@ -179,7 +180,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int const d_head = d_model / num_heads;
 
     int const B_c = min(32, N);
-    int const B_r = min(B_c, (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + B_c));
+    int const B_r = min(B_c, (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + 1 + B_c));
     int const T_r = CEIL_DIV(N, B_r);
 
     int const sumMaxSizeBytes = N * num_heads * sizeof(float);
@@ -200,7 +201,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, B_r);
-    int const sharedMemoryBytes = (B_r * d_head          // Q
+    int const sharedMemoryBytes = (B_r * (d_head + 1)    // Q
                                    + B_c * (d_head + 1)  // K
                                    + B_c * d_head        // V
                                    + B_r * B_c)          // S
