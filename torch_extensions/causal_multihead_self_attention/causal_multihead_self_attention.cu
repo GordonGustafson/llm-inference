@@ -180,8 +180,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     int const d_head = d_model / num_heads;
 
-    int const B_c = min(32, N);
-    int const B_r = min(B_c, (maxFloatsInSharedMemory - B_c * (2 * d_head + 1)) / (d_head + 1 + B_c));
+    int const B_c = 32;
+    int const B_r = 32;
     int const T_r = CEIL_DIV(N, B_r);
 
     int const sumMaxSizeBytes = N * num_heads * sizeof(float);
