@@ -79,6 +79,7 @@ if __name__ == "__main__":
 
     tokenizer = GPT2Tokenizer()
     sampler = GreedySampler()
+    torch.manual_seed(0)
 
     print("Executing first run...")
     start_time_ns = time.perf_counter_ns()
