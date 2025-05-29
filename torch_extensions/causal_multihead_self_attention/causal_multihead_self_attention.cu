@@ -94,11 +94,12 @@ __global__ void __launch_bounds__(1024)
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
         // threadIdx.y to help along the B_c dimension.
-        for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
+        for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                K_float4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
-                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                // Store K in shm in transposed form to optimize for coalesced reads.
+                K[d_index * K_row_length + B_c_index] = K_HBM[row_index * d_model + d_min_for_head + d_index];
+                V[B_c_index * d_head + d_index] = V_HBM[row_index * d_model + d_min_for_head + d_index];
             }
         }
 
@@ -115,13 +116,8 @@ __global__ void __launch_bounds__(1024)
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 #pragma unroll
-                for (int d_index = 0; d_index < d_head / 4; d_index++) {
-                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
-                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
-                    S_val_for_thread += Q_val_float4.w * K_val_float4.w;
-                    S_val_for_thread += Q_val_float4.x * K_val_float4.x;
-                    S_val_for_thread += Q_val_float4.y * K_val_float4.y;
-                    S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+                for (int d_index = 0; d_index < d_head; d_index++) {
+                    S_val_for_thread += Q[d_index * Q_row_length + B_r_index] * K[d_index * K_row_length + threadIdx.x];
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
             }
