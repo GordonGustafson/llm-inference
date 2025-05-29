@@ -69,15 +69,15 @@ __global__ void __launch_bounds__(1024)
     int const K_row_length = B_c;
 
     float* const Q = sharedMemory;
-    float* const K = Q + Q_row_length * d_head;
-    float* const V = K + K_row_length * d_head;
-    float* const S = V + B_c * d_head;
-    float4* const Q_float4 = reinterpret_cast<float4*>(Q);
-    float4* const K_float4 = reinterpret_cast<float4*>(K);
-    float4* const V_float4 = reinterpret_cast<float4*>(V);
-    float4* const Q_HBM_float4 = reinterpret_cast<float4*>(Q_HBM);
-    float4* const K_HBM_float4 = reinterpret_cast<float4*>(K_HBM);
-    float4* const V_HBM_float4 = reinterpret_cast<float4*>(V_HBM);
+    float const* const K = Q + Q_row_length * d_head;
+    float const* const V = K + K_row_length * d_head;
+    float const* const S = V + B_c * d_head;
+    float4* const Q_float4 = reinterpret_cast<float4 const*>(Q);
+    float4* const K_float4 = reinterpret_cast<float4 const*>(K);
+    float4* const V_float4 = reinterpret_cast<float4 const*>(V);
+    float4* const Q_HBM_float4 = reinterpret_cast<float4 const*>(Q_HBM);
+    float4* const K_HBM_float4 = reinterpret_cast<float4 const*>(K_HBM);
+    float4* const V_HBM_float4 = reinterpret_cast<float4 const*>(V_HBM);
 
     // Load Q, using threadIdx.x to help along the d_head dimension (for memory coalescing) and
     // threadIdx.y to help along the B_r dimension.
@@ -97,8 +97,8 @@ __global__ void __launch_bounds__(1024)
         for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                K_float_4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
-                V_float_4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                K_float4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
             }
         }
 
