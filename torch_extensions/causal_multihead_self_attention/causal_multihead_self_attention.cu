@@ -65,23 +65,26 @@ __global__ void __launch_bounds__(1024)
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
-
-    // Avoid bank conflicts when writing Q and K to shared memory.
-    int const Q_row_length = B_r + 1;
-    int const K_row_length = B_c + 1;
+    int const Q_row_length = B_r;
+    int const K_row_length = B_c;
 
     float* const Q = sharedMemory;
     float* const K = Q + Q_row_length * d_head;
     float* const V = K + K_row_length * d_head;
     float* const S = V + B_c * d_head;
+    float4* const Q_float4 = reinterpret_cast<float4*>(Q);
+    float4* const K_float4 = reinterpret_cast<float4*>(K);
+    float4* const V_float4 = reinterpret_cast<float4*>(V);
+    float4* const Q_HBM_float4 = reinterpret_cast<float4*>(Q_HBM);
+    float4* const K_HBM_float4 = reinterpret_cast<float4*>(K_HBM);
+    float4* const V_HBM_float4 = reinterpret_cast<float4*>(V_HBM);
 
     // Load Q, using threadIdx.x to help along the d_head dimension (for memory coalescing) and
     // threadIdx.y to help along the B_r dimension.
-    for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
+    for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
-            // Store Q in shm in transposed form to optimize for coalesced reads.
-            Q[d_index * Q_row_length + B_r_index] = Q_HBM[row_index * d_model + d_min_for_head + d_index];
+            Q_float4[B_r_index * (Q_row_length/4) + d_index] = Q_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
         }
     }
 
@@ -91,12 +94,11 @@ __global__ void __launch_bounds__(1024)
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
         // threadIdx.y to help along the B_c dimension.
-        for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
+        for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                // Store K in shm in transposed form to optimize for coalesced reads.
-                K[d_index * K_row_length + B_c_index] = K_HBM[row_index * d_model + d_min_for_head + d_index];
-                V[B_c_index * d_head + d_index] = V_HBM[row_index * d_model + d_min_for_head + d_index];
+                K_float_4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                V_float_4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
             }
         }
 
@@ -113,8 +115,13 @@ __global__ void __launch_bounds__(1024)
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 #pragma unroll
-                for (int d_index = 0; d_index < d_head; d_index++) {
-                    S_val_for_thread += Q[d_index * Q_row_length + B_r_index] * K[d_index * K_row_length + threadIdx.x];
+                for (int d_index = 0; d_index < d_head / 4; d_index++) {
+                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
+                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
+                    S_val_for_thread += Q_val_float4.w * K_val_float4.w;
+                    S_val_for_thread += Q_val_float4.x * K_val_float4.x;
+                    S_val_for_thread += Q_val_float4.y * K_val_float4.y;
+                    S_val_for_thread += Q_val_float4.z * K_val_float4.z;
                 }
                 S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
             }
@@ -204,8 +211,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, B_r);
-    int const sharedMemoryBytes = ((B_r + 1) * d_head    // Q
-                                   + (B_c + 1) * d_head  // K
+    int const sharedMemoryBytes = (B_r * d_head          // Q
+                                   + B_c * d_head        // K
                                    + B_c * d_head        // V
                                    + B_r * B_c)          // S
                                   * sizeof(float);
