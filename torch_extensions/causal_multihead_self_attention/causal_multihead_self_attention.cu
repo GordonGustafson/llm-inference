@@ -80,7 +80,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     }
 
     // Iterate horizontally through different S blocks.
-    for (int T_c_index = 0; T_c_index <= T_c; T_c_index++) {
+    for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
