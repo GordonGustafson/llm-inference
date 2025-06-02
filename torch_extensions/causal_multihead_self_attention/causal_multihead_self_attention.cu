@@ -11,6 +11,9 @@
 #include <pybind11/pybind11.h>
 
 
+#define ALL_THREADS_IN_WARP_MASK 0xffffffffu
+#define THREADS_PER_WARP 32
+
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -67,17 +70,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     float* const K = Q + B_r * d_head;
     float* const V = K + B_c * K_row_length;
     float* const S = V + B_c * d_head;
-    float* const row_sum = S + B_c * B_r;
-    float* const row_max = row_sum + B_r;
-
-    if (threadIdx.x == 0) {
-        // ASSUMPTION: blockDim.y == B_r
-        row_sum[threadIdx.y] = 0.0f;
-    }
-    if (threadIdx.x == 1) {
-        // ASSUMPTION: blockDim.y == B_r, blockDim.x >= 2
-        row_max[threadIdx.y] = -INFINITY;
-    }
 
     // Load Q, using threadIdx.x to help along the d_head dimension (for memory coalescing) and
     // threadIdx.y to help along the B_r dimension.
@@ -87,6 +79,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             Q[B_r_index * d_head + d_index] = Q_HBM[row_index * d_model + d_min_for_head + d_index];
         }
     }
+
+    float S_row_old_global_sum = 0.0f;
+    float S_row_old_global_max = -INFINITY;
 
     // Iterate horizontally through different S blocks.
     for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
@@ -102,6 +97,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             }
         }
 
+        // Make sure we're done writing Q, K, and V before we read them.
         __syncthreads();
 
         // Iterate vertically within the S block.
@@ -113,46 +109,43 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
             bool const start_column_in_row_unmasked = column_upper_bound > 0;
-            if (threadIdx.x < column_upper_bound && row_in_bounds) {
-                float S_val_for_thread = 0.0f;
+            bool const col_unmasked = threadIdx.x < column_upper_bound;
+            float S_row_new_global_sum;
+            float S_row_new_global_max;
+            float S_val_for_thread = 0.0f;
+            if (col_unmasked && row_in_bounds) {
+                // Compute S.
                 for (int d_index = 0; d_index < d_head; d_index++) {
                     S_val_for_thread += Q[B_r_index * d_head + d_index] * K[threadIdx.x * K_row_length + d_index];
                 }
-                S[B_r_index * B_c + threadIdx.x] = S_val_for_thread / temperature;
+                S_val_for_thread = S_val_for_thread / temperature;
+                S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
             }
 
-            int const max_sum_index = B_r_index;
-            float S_row_old_global_max;
-            float S_row_old_global_sum;
             if (row_in_bounds && start_column_in_row_unmasked) {
-                S_row_old_global_max = row_max[max_sum_index];
-                S_row_old_global_sum = row_sum[max_sum_index];
-            }
-            // Make sure we're done reading row_max and row_sum before we write it.
-            __syncthreads();
-
-            // Update max and sum for this row.
-            if (threadIdx.x == 0 && row_in_bounds && start_column_in_row_unmasked) {
-                float S_row_local_max = -INFINITY;
-                float S_row_local_sum = 0.0f;
-                for (int col = 0; col < column_upper_bound; col++) {
-                    float const S_val_iter = S[B_r_index * B_c + col];
-                    S_row_local_sum = onlineSoftmaxSum(S_row_local_max, S_row_local_sum, S_val_iter, 1.0f);
-                    S_row_local_max = max(S_row_local_max, S_val_iter);
+                // Gather the values for localSum and localMax on threadIdx.x == 0.
+                // ASSUMPTION: blockDim.x == 32
+                float localSum = col_unmasked ? 1.0f : 0.0f;
+                float localMax = col_unmasked ? S_val_for_thread : -INFINITY;
+                for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
+                    float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
+                    float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
+                    localSum = onlineSoftmaxSum(localMax, localSum, incomingMax, incomingSum);
+                    localMax = max(localMax, incomingMax);
                 }
-                row_sum[max_sum_index] = onlineSoftmaxSum(S_row_old_global_max,
-                                                              S_row_old_global_sum,
-                                                              S_row_local_max,
-                                                              S_row_local_sum);
-                row_max[max_sum_index] = max(S_row_old_global_max, S_row_local_max);
+
+                // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
+                localSum = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, 0);
+                localMax = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, 0);
+
+                S_row_new_global_sum = onlineSoftmaxSum(localMax, localSum, S_row_old_global_max, S_row_old_global_sum);
+                S_row_new_global_max = max(localMax, S_row_old_global_max);
             }
-            // Make sure we're done writing row_max and row_sum before we write it.
+
+            // Make sure we're done writing S before we read it.
             __syncthreads();
 
             if (row_in_bounds && start_column_in_row_unmasked) {
-                float const S_row_new_global_max = row_max[max_sum_index];
-                float const S_row_new_global_sum = row_sum[max_sum_index];
-
                 // Compute P and O
                 for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
                     float PV_val = 0.0f;
@@ -167,7 +160,11 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     O_HBM[OIndexForThread] = O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * (S_row_old_global_sum / S_row_new_global_sum) + PV_val;
                 }
             }
-            // Make sure we're done reading S before we write it.
+
+            S_row_old_global_sum = S_row_new_global_sum;
+            S_row_old_global_max = S_row_new_global_max;
+
+            // Make sure we're done reading S, Q, K, and V before we write them.
             __syncthreads();
         }
     }
@@ -202,8 +199,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 1)  // K
                                    + B_c * d_head        // V
-                                   + B_r * B_c           // S
-                                   + 2 * B_r)            // row_sum and row_max
+                                   + B_r * B_c)          // S
                                   * sizeof(float);
     causal_multihead_self_attention_kernel<<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N, d_model, d_head, num_heads, temperature, B_c, B_r);
     gpuErrchk(cudaPeekAtLastError());
