@@ -118,6 +118,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 S_row_old_global_max = row_max_HBM[max_sum_index];
                 S_row_old_global_sum = row_sum_HBM[max_sum_index];
             }
+            // Make sure we're done reading row_max_HBM and row_sum_HBM before we write it.
             __syncthreads();
 
             // Update max and sum for this row.
@@ -135,6 +136,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                                                               S_row_local_sum);
                 row_max_HBM[max_sum_index] = max(S_row_old_global_max, S_row_local_max);
             }
+            // Make sure we're done writing row_max_HBM and row_sum_HBM before we write it.
             __syncthreads();
 
             if (row_in_bounds) {
@@ -155,6 +157,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     O_HBM[OIndexForThread] = O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * (S_row_old_global_sum / S_row_new_global_sum) + PV_val;
                 }
             }
+            // Make sure we're done reading S before we write it.
+            __syncthreads();
         }
     }
 }
