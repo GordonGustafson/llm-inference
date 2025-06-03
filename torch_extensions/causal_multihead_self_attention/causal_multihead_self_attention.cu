@@ -103,6 +103,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             int const column_upper_bound_absolute = row_absolute + 1;
             int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
+            bool const start_column_in_row_unmasked = column_upper_bound > 0;
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
                 float S_val_for_thread = 0.0f;
                 for (int d_index = 0; d_index < d_head; d_index++) {
@@ -114,7 +115,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             int const max_sum_index = blockIdx.y * N + blockIdx.x * B_r + B_r_index;
             float S_row_old_global_max;
             float S_row_old_global_sum;
-            if (row_in_bounds) {
+            if (row_in_bounds && start_column_in_row_unmasked) {
                 S_row_old_global_max = row_max_HBM[max_sum_index];
                 S_row_old_global_sum = row_sum_HBM[max_sum_index];
             }
@@ -122,7 +123,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             __syncthreads();
 
             // Update max and sum for this row.
-            if (threadIdx.x == 0 && row_in_bounds) {
+            if (threadIdx.x == 0 && row_in_bounds && start_column_in_row_unmasked) {
                 float S_row_local_max = -INFINITY;
                 float S_row_local_sum = 0.0f;
                 for (int col = 0; col < column_upper_bound; col++) {
@@ -139,7 +140,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             // Make sure we're done writing row_max_HBM and row_sum_HBM before we write it.
             __syncthreads();
 
-            if (row_in_bounds) {
+            if (row_in_bounds && start_column_in_row_unmasked) {
                 float const S_row_new_global_max = row_max_HBM[max_sum_index];
                 float const S_row_new_global_sum = row_sum_HBM[max_sum_index];
 
