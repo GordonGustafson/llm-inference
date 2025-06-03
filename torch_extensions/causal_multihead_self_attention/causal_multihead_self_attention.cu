@@ -157,13 +157,13 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                     float PV_val = 0.0f;
                     for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
                         float const S_val = S[B_r_index * B_c + V_B_c_index];
-                        float const P_val = expf(S_val - S_row_new_global_max) / S_row_new_global_sum;
+                        float const P_val = expf(S_val - S_row_new_global_max);
                         PV_val += P_val * V[V_B_c_index * d_head + d_index];
                     }
 
                     int const row_index = blockIdx.x * B_r + B_r_index;
                     int const OIndexForThread = row_index * d_model + d_min_for_head + d_index;
-                    O_HBM[OIndexForThread] = O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * (S_row_old_global_sum / S_row_new_global_sum) + PV_val;
+                    O_HBM[OIndexForThread] = (O_HBM[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
                 }
             }
 
