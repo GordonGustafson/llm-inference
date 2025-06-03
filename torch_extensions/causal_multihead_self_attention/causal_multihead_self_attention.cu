@@ -46,19 +46,15 @@ __device__ static inline float onlineSoftmaxSum(float const maxA,
     }
 }
 
-template <int d_head>
-__global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,  // size Nxd
-                                                       float const* const K_HBM,  // size Nxd
-                                                       float const* const V_HBM,  // size Nxd
-                                                       float* const O_HBM,        // size Nxd
-                                                       int const N,
-                                                       int const d_model,
-                                                       int const num_heads,
-                                                       float const temperature,
-                                                       int const B_c,
-                                                       int const B_r) {
+template <int d_head, int d_model, int B_c, int B_r>
+__global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,  // size Nxd_model
+                                                       float const* const K_HBM,  // size Nxd_model
+                                                       float const* const V_HBM,  // size Nxd_model
+                                                       float* const O_HBM,        // size Nxd_model
+                                                       int const N) {
     extern __shared__ float sharedMemory[];
     int const T_c = CEIL_DIV(N, B_c);
+    float const temperature = sqrt(d_head);
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
@@ -194,14 +190,12 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     int const d_head = d_model / num_heads;
 
-    int const B_c = 32;
-    int const B_r = 32;
+    int constexpr B_c = 32;
+    int constexpr B_r = 32;
     int const T_r = CEIL_DIV(N, B_r);
 
     float* zeroFloats = new float[N * d_model]();
     gpuErrchk(cudaMemcpy(output, zeroFloats, N * d_model * sizeof(float), cudaMemcpyHostToDevice));
-
-    float const temperature = sqrt(d_head);
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, B_r);
@@ -210,11 +204,23 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
                                    + B_c * d_head        // V
                                    + B_r * B_c)          // S
                                   * sizeof(float);
-    if (d_head == 64) {
-        gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel<64>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
-        causal_multihead_self_attention_kernel<64><<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N, d_model, num_heads, temperature, B_c, B_r);
-    } else {
+    if (d_head != 64) {
         throw std::invalid_argument("Head dimension must be 64.");
+    }
+    if (d_model == 768) {
+        gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel<64, 768, B_c, B_r>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
+        causal_multihead_self_attention_kernel<64, 768, B_c, B_r><<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N);
+    } else if (d_model == 1024) {
+        gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel<64, 1024, B_c, B_r>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
+        causal_multihead_self_attention_kernel<64, 1024, B_c, B_r><<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N);
+    } else if (d_model == 1280) {
+        gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel<64, 1280, B_c, B_r>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
+        causal_multihead_self_attention_kernel<64, 1280, B_c, B_r><<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N);
+    } else if (d_model == 1600) {
+        gpuErrchk(cudaFuncSetAttribute(causal_multihead_self_attention_kernel<64, 1600, B_c, B_r>, cudaFuncAttributeMaxDynamicSharedMemorySize, maxSharedMemory));
+        causal_multihead_self_attention_kernel<64, 1600, B_c, B_r><<<blocksPerGrid, threadsPerBlock, sharedMemoryBytes>>>(Q, K, V, output, N);
+    } else {
+        throw std::invalid_argument("Model dimension must be 768, 1024, 1280, or 1600.");
     }
     gpuErrchk(cudaPeekAtLastError());
 

@@ -10,8 +10,8 @@ _MAX_ERROR = 1e-6
 class TestTorchExtension(unittest.TestCase):
     def test_equivalence(self):
         for seq_len in range(1, 200):
-            num_heads = 2
-            model_dim = 128
+            num_heads = 12
+            model_dim = 768
             head_dim = model_dim // num_heads
             Q = torch.rand((1, seq_len, model_dim), device="cuda")
             K = torch.rand((1, seq_len, model_dim), device="cuda")
