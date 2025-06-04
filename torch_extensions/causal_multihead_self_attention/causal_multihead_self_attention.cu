@@ -59,8 +59,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
     int const Q_row_length = d_head;
-    // For alleviating shared memory bank conflicts
-    int const K_row_length = d_head + 4;
+    int const K_row_length = d_head;
 
     float* const Q = sharedMemory;
     float* const K = Q + B_r * Q_row_length;
@@ -117,10 +116,11 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             float S_val_for_thread = 0.0f;
             if (col_unmasked && row_in_bounds) {
                 // Compute S.
-                #pragma unroll
+                #pragma unroll 8
                 for (int d_index = 0; d_index < d_head / 4; d_index++) {
-                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
-                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
+                    // Offset column index by threadIdx.x to alleviate shared memory bank conflicts.
+                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
+                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
                     S_val_for_thread += Q_val_float4.w * K_val_float4.w;
                     S_val_for_thread += Q_val_float4.x * K_val_float4.x;
                     S_val_for_thread += Q_val_float4.y * K_val_float4.y;
@@ -202,7 +202,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, B_r);
     int const sharedMemoryBytes = (B_r * d_head          // Q
-                                   + B_c * (d_head + 4)  // K
+                                   + B_c * d_head        // K
                                    + B_c * d_head        // V
                                    + B_r * B_c)          // S
                                   * sizeof(float);
