@@ -14,6 +14,8 @@
 #define ALL_THREADS_IN_WARP_MASK 0xffffffffu
 #define THREADS_PER_WARP 32
 
+int constexpr COARSENING_FACTOR = 2;
+
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -110,31 +112,37 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
             bool const start_column_in_row_unmasked = column_upper_bound > 0;
-            bool const col_unmasked = threadIdx.x < column_upper_bound;
             float S_row_new_global_sum;
             float S_row_new_global_max;
-            float S_val_for_thread = 0.0f;
-            if (col_unmasked && row_in_bounds) {
+            float localSum = 0.0f;
+            float localMax = -INFINITY;
+            if (row_in_bounds) {
                 // Compute S.
-                #pragma unroll 8
-                for (int d_index = 0; d_index < d_head / 4; d_index++) {
-                    // Offset column index by threadIdx.x to alleviate shared memory bank conflicts.
-                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
-                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
-                    S_val_for_thread += Q_val_float4.w * K_val_float4.w;
-                    S_val_for_thread += Q_val_float4.x * K_val_float4.x;
-                    S_val_for_thread += Q_val_float4.y * K_val_float4.y;
-                    S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+                for (int coarsening_value = 0; coarsening_value < COARSENING_FACTOR; coarsening_value++) {
+                    float S_val_for_thread = 0.0f;
+                    int const column_offset = coarsening_value * blockDim.x + threadIdx.x;
+                    if (column_offset < column_upper_bound) {
+                        #pragma unroll 8
+                        for (int d_index = 0; d_index < d_head / 4; d_index++) {
+                            // Offset column index by threadIdx.x to alleviate shared memory bank conflicts.
+                            float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
+                            float4 const K_val_float4 = K_float4[column_offset * (K_row_length / 4) + ((d_index + threadIdx.x) % (d_head / 4))];
+                            S_val_for_thread += Q_val_float4.w * K_val_float4.w;
+                            S_val_for_thread += Q_val_float4.x * K_val_float4.x;
+                            S_val_for_thread += Q_val_float4.y * K_val_float4.y;
+                            S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+                        }
+                        S_val_for_thread = S_val_for_thread / temperature;
+                        S[B_r_index * B_c + column_offset] = S_val_for_thread;
+                        localSum = onlineSoftmaxSum(localMax, localSum, S_val_for_thread, 1.0);
+                        localMax = max(localMax, S_val_for_thread);
+                    }
                 }
-                S_val_for_thread = S_val_for_thread / temperature;
-                S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
             }
 
             if (row_in_bounds && start_column_in_row_unmasked) {
                 // Gather the values for localSum and localMax on threadIdx.x == 0.
                 // ASSUMPTION: blockDim.x == 32
-                float localSum = col_unmasked ? 1.0f : 0.0f;
-                float localMax = col_unmasked ? S_val_for_thread : -INFINITY;
                 for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
                     float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
                     float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
@@ -192,7 +200,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     int const d_head = d_model / num_heads;
 
-    int constexpr B_c = 32;
+    int constexpr B_c = 64;
     int constexpr B_r = 32;
     int const T_r = CEIL_DIV(N, B_r);
 
@@ -200,7 +208,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     gpuErrchk(cudaMemcpy(output, zeroFloats, N * d_model * sizeof(float), cudaMemcpyHostToDevice));
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(B_c, B_r);
+    dim3 const threadsPerBlock(32, 32);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * d_head        // K
                                    + B_c * d_head        // V
