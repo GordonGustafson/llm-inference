@@ -70,6 +70,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     float4* const Q_float4 = reinterpret_cast<float4*>(Q);
     float4* const K_float4 = reinterpret_cast<float4*>(K);
     float4* const V_float4 = reinterpret_cast<float4*>(V);
+    float4* const S_float4 = reinterpret_cast<float4*>(S);
     float4 const* const Q_HBM_float4 = reinterpret_cast<float4 const*>(Q_HBM);
     float4 const* const K_HBM_float4 = reinterpret_cast<float4 const*>(K_HBM);
     float4 const* const V_HBM_float4 = reinterpret_cast<float4 const*>(V_HBM);
@@ -165,10 +166,17 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 // Compute P and O
                 for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
                     float PV_val = 0.0f;
-                    for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
+                    int V_B_c_index = 0;
+                    for (; V_B_c_index < (column_upper_bound / 4) * 4; V_B_c_index += 4) {
+                        float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
+                        PV_val += expf(S_val_float4.x - S_row_new_global_max) * V[(V_B_c_index + 0) * d_head + d_index];
+                        PV_val += expf(S_val_float4.y - S_row_new_global_max) * V[(V_B_c_index + 1) * d_head + d_index];
+                        PV_val += expf(S_val_float4.z - S_row_new_global_max) * V[(V_B_c_index + 2) * d_head + d_index];
+                        PV_val += expf(S_val_float4.w - S_row_new_global_max) * V[(V_B_c_index + 3) * d_head + d_index];
+                    }
+                    for (; V_B_c_index < column_upper_bound; V_B_c_index += 1) {
                         float const S_val = S[B_r_index * B_c + V_B_c_index];
-                        float const P_val = expf(S_val - S_row_new_global_max);
-                        PV_val += P_val * V[V_B_c_index * d_head + d_index];
+                        PV_val += expf(S_val - S_row_new_global_max) * V[V_B_c_index * d_head + d_index];
                     }
 
                     int const row_index = blockIdx.x * B_r + B_r_index;
