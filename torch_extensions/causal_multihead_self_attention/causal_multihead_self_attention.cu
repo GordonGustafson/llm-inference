@@ -81,6 +81,15 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
 
     // Iterate horizontally through different S blocks.
     for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
+        int const top_row_absolute = B_r * blockIdx.x;
+        int const bottow_row_absolute = top_row_absolute + B_r - 1;
+        int const left_column_absolute = T_c_index * B_c;
+
+        if (left_column_absolute > bottow_row_absolute) {
+            // This entire block is masked out by causal masking.
+            return;
+        }
+
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
@@ -99,9 +108,9 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         // Since we use __syncthreads in this loop we have to make sure threads don't exit the function early.
         for (int B_r_index = threadIdx.y; B_r_index < CEIL_DIV(B_r_bounds_checked_for_last_row, blockDim.y) * blockDim.y; B_r_index += blockDim.y) {
             bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
-            int const row_absolute = B_r * blockIdx.x + B_r_index;
+            int const row_absolute = top_row_absolute + B_r_index;
             int const column_upper_bound_absolute = row_absolute + 1;
-            int const column_upper_bound_within_tile = column_upper_bound_absolute - T_c_index * B_c;
+            int const column_upper_bound_within_tile = column_upper_bound_absolute - left_column_absolute;
             int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
             bool const start_column_in_row_unmasked = column_upper_bound > 0;
             if (threadIdx.x < column_upper_bound && row_in_bounds) {
