@@ -109,86 +109,83 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         // Make sure we're done writing Q, K, and V before we read them.
         __syncthreads();
 
-        // Iterate vertically within the S block.
-        // Since we use __syncthreads in this loop we have to make sure threads don't exit the function early.
-        for (int B_r_index = threadIdx.y; B_r_index < CEIL_DIV(B_r_bounds_checked_for_last_row, blockDim.y) * blockDim.y; B_r_index += blockDim.y) {
-            int const top_row_absolute = B_r * blockIdx.x;
-            int const bottow_row_absolute = top_row_absolute + B_r - 1;
-            int const left_column_absolute = T_c_index * B_c;
+        int const B_r_index = threadIdx.y;
+        int const top_row_absolute = B_r * blockIdx.x;
+        int const bottow_row_absolute = top_row_absolute + B_r - 1;
+        int const left_column_absolute = T_c_index * B_c;
 
-            if (left_column_absolute > bottow_row_absolute) {
-                // This entire block is masked out by causal masking.
-                goto write_output;
-            }
-
-            bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
-            int const row_absolute = top_row_absolute + B_r_index;
-            int const column_upper_bound_absolute = row_absolute + 1;
-            int const column_upper_bound_within_tile = column_upper_bound_absolute - left_column_absolute;
-            int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
-            bool const start_column_in_row_unmasked = column_upper_bound > 0;
-            bool const col_unmasked = threadIdx.x < column_upper_bound;
-            float S_row_new_global_sum;
-            float S_row_new_global_max;
-            float S_val_for_thread = 0.0f;
-            if (col_unmasked && row_in_bounds) {
-                // Compute S.
-                #pragma unroll
-                for (int d_index = 0; d_index < d_head / 4; d_index++) {
-                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
-                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
-                    S_val_for_thread += Q_val_float4.w * K_val_float4.w;
-                    S_val_for_thread += Q_val_float4.x * K_val_float4.x;
-                    S_val_for_thread += Q_val_float4.y * K_val_float4.y;
-                    S_val_for_thread += Q_val_float4.z * K_val_float4.z;
-                }
-                S_val_for_thread = S_val_for_thread / temperature;
-                S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
-            }
-
-            if (row_in_bounds && start_column_in_row_unmasked) {
-                // Gather the values for localSum and localMax on threadIdx.x == 0.
-                // ASSUMPTION: blockDim.x == 32
-                float localSum = col_unmasked ? 1.0f : 0.0f;
-                float localMax = col_unmasked ? S_val_for_thread : -INFINITY;
-                for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
-                    float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
-                    float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
-                    localSum = onlineSoftmaxSum(localMax, localSum, incomingMax, incomingSum);
-                    localMax = max(localMax, incomingMax);
-                }
-
-                // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
-                localSum = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, 0);
-                localMax = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, 0);
-
-                S_row_new_global_sum = onlineSoftmaxSum(localMax, localSum, S_row_old_global_max, S_row_old_global_sum);
-                S_row_new_global_max = max(localMax, S_row_old_global_max);
-            }
-
-            // Make sure we're done writing S before we read it.
-            __syncthreads();
-
-            if (row_in_bounds && start_column_in_row_unmasked) {
-                // Compute P and O
-                for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
-                    float PV_val = 0.0f;
-                    for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
-                        float const S_val = S[B_r_index * B_c + V_B_c_index];
-                        float const P_val = expf(S_val - S_row_new_global_max);
-                        PV_val += P_val * V[V_B_c_index * d_head + d_index];
-                    }
-                    int const OIndexForThread = B_r_index * O_row_length + d_index;
-                    O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
-                }
-            }
-
-            S_row_old_global_sum = S_row_new_global_sum;
-            S_row_old_global_max = S_row_new_global_max;
-
-            // Make sure we're done reading S, Q, K, and V before we write them, and done writing O before we read it.
-            __syncthreads();
+        if (left_column_absolute > bottow_row_absolute) {
+            // This entire block is masked out by causal masking.
+            goto write_output;
         }
+
+        bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
+        int const row_absolute = top_row_absolute + B_r_index;
+        int const column_upper_bound_absolute = row_absolute + 1;
+        int const column_upper_bound_within_tile = column_upper_bound_absolute - left_column_absolute;
+        int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
+        bool const start_column_in_row_unmasked = column_upper_bound > 0;
+        bool const col_unmasked = threadIdx.x < column_upper_bound;
+        float S_row_new_global_sum;
+        float S_row_new_global_max;
+        float S_val_for_thread = 0.0f;
+        if (col_unmasked && row_in_bounds) {
+            // Compute S.
+            #pragma unroll
+            for (int d_index = 0; d_index < d_head / 4; d_index++) {
+                float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
+                float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
+                S_val_for_thread += Q_val_float4.w * K_val_float4.w;
+                S_val_for_thread += Q_val_float4.x * K_val_float4.x;
+                S_val_for_thread += Q_val_float4.y * K_val_float4.y;
+                S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+            }
+            S_val_for_thread = S_val_for_thread / temperature;
+            S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
+        }
+
+        if (row_in_bounds && start_column_in_row_unmasked) {
+            // Gather the values for localSum and localMax on threadIdx.x == 0.
+            // ASSUMPTION: blockDim.x == 32
+            float localSum = col_unmasked ? 1.0f : 0.0f;
+            float localMax = col_unmasked ? S_val_for_thread : -INFINITY;
+            for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
+                float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
+                float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
+                localSum = onlineSoftmaxSum(localMax, localSum, incomingMax, incomingSum);
+                localMax = max(localMax, incomingMax);
+            }
+
+            // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
+            localSum = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, 0);
+            localMax = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, 0);
+
+            S_row_new_global_sum = onlineSoftmaxSum(localMax, localSum, S_row_old_global_max, S_row_old_global_sum);
+            S_row_new_global_max = max(localMax, S_row_old_global_max);
+        }
+
+        // Make sure we're done writing S before we read it.
+        __syncthreads();
+
+        if (row_in_bounds && start_column_in_row_unmasked) {
+            // Compute P and O
+            for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
+                float PV_val = 0.0f;
+                for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
+                    float const S_val = S[B_r_index * B_c + V_B_c_index];
+                    float const P_val = expf(S_val - S_row_new_global_max);
+                    PV_val += P_val * V[V_B_c_index * d_head + d_index];
+                }
+                int const OIndexForThread = B_r_index * O_row_length + d_index;
+                O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
+            }
+        }
+
+        S_row_old_global_sum = S_row_new_global_sum;
+        S_row_old_global_max = S_row_new_global_max;
+
+        // Make sure we're done reading S, Q, K, and V before we write them, and done writing O before we read it.
+        __syncthreads();
     }
 
     // Write O_HBM
