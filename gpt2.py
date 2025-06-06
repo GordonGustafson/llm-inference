@@ -127,3 +127,13 @@ def time_greedy_gpt2_inference(hf_model_name: str,
     return InferenceTiming(first_run_execution_time_seconds=first_run_execution_time_seconds,
                            second_run_execution_time_seconds=second_run_execution_time_seconds,
                            generated_text=generated_text)
+
+
+if __name__ == "__main__":
+    inference_timing = time_greedy_gpt2_inference(hf_model_name="openai-community/gpt2",
+                                                  attention_backend=ScaledDotProductAttentionBackend.CUSTOM_CUDA,
+                                                  device=torch.device("cuda"),
+                                                  prompt="Hello, I'm a language model,",
+                                                  max_tokens=500)
+    print(f"Inference time: {inference_timing.second_run_execution_time_seconds} seconds")
+    print(f"Generated text: {inference_timing.generated_text} seconds")
