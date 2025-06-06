@@ -96,13 +96,12 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
         int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
-        // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
+        // Load K using threadIdx.x to help along the d_head dimension (for memory coalescing) and
         // threadIdx.y to help along the B_c dimension.
         for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
                 K_float4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
-                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
             }
         }
 
@@ -144,18 +143,30 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
         }
 
+        float localSum;
+        float localMax;
         if (row_in_bounds && start_column_in_row_unmasked) {
             // Gather the values for localSum and localMax on threadIdx.x == 0.
             // ASSUMPTION: blockDim.x == 32
-            float localSum = col_unmasked ? 1.0f : 0.0f;
-            float localMax = col_unmasked ? S_val_for_thread : -INFINITY;
+            localSum = col_unmasked ? 1.0f : 0.0f;
+            localMax = col_unmasked ? S_val_for_thread : -INFINITY;
             for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
                 float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
                 float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
                 localSum = onlineSoftmaxSum(localMax, localSum, incomingMax, incomingSum);
                 localMax = max(localMax, incomingMax);
             }
+        }
 
+        // Load V.
+        for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
+            for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
+                int const row_index = T_c_index * B_c + B_c_index;
+                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+            }
+        }
+
+        if (row_in_bounds && start_column_in_row_unmasked) {
             // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
             localSum = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, 0);
             localMax = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, 0);
