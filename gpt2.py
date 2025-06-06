@@ -88,11 +88,11 @@ class InferenceTiming:
     second_run_execution_time_seconds: float
     generated_text: str
 
-def time_greedy_gpt_inference(hf_model_name: str,
-                              attention_backend: ScaledDotProductAttentionBackend,
-                              device: torch.device,
-                              prompt: str,
-                              max_tokens: int):
+def time_greedy_gpt2_inference(hf_model_name: str,
+                               attention_backend: ScaledDotProductAttentionBackend,
+                               device: torch.device,
+                               prompt: str,
+                               max_tokens: int):
     model = make_gpt_model(hf_model_name=hf_model_name,
                            attention_backend=attention_backend,
                            device=device)
@@ -127,14 +127,3 @@ def time_greedy_gpt_inference(hf_model_name: str,
     return InferenceTiming(first_run_execution_time_seconds=first_run_execution_time_seconds,
                            second_run_execution_time_seconds=second_run_execution_time_seconds,
                            generated_text=generated_text)
-
-
-if __name__ == "__main__":
-    inference_timing = time_greedy_gpt_inference(hf_model_name="openai-community/gpt2",
-                                                 attention_backend=ScaledDotProductAttentionBackend.CUSTOM_CUDA,
-                                                 device=torch.device("cuda"),
-                                                 prompt="Hello, I'm a language model,",
-                                                 max_tokens=500)
-    print(f"time elapsed by first run: {inference_timing.first_run_execution_time_seconds} seconds")
-    print(f"time elapsed by second run: {inference_timing.second_run_execution_time_seconds} seconds")
-    print(f"generated text: {inference_timing.generated_text}")
