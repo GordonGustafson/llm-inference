@@ -191,7 +191,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 int V_B_c_index = 0;
                 for (; V_B_c_index < (column_upper_bound / 4) * 4; V_B_c_index += 4) {
                     float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
-                    float4 const V_val_float4 = V_float4[d_index * (B_c / 4) + (V_B_c_index / 4)]
+                    float4 const V_val_float4 = V_float4[d_index * (B_c / 4) + (V_B_c_index / 4)];
                     PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
                     PV_val += expf(S_val_float4.y - S_row_new_global_max) * V_val_float4.y;
                     PV_val += expf(S_val_float4.z - S_row_new_global_max) * V_val_float4.z;
