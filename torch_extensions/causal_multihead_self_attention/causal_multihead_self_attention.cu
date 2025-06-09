@@ -14,6 +14,8 @@
 #define ALL_THREADS_IN_WARP_MASK 0xffffffffu
 #define THREADS_PER_WARP 32
 
+int constexpr numSBlocksInShmAtOnce = 2;
+
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -53,21 +55,23 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                                                        float* const O_HBM,        // size Nxd_model
                                                        int const N) {
     extern __shared__ float sharedMemory[];
-    int const T_c = CEIL_DIV(N, B_c);
+    int SGroupNumCols = numSBlocksInShmAtOnce * B_c;
+    int const numSGroups = CEIL_DIV(N, SGroupNumCols);
     float const temperature = sqrt(d_head);
 
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
     int const Q_row_length = d_head;
+    int const K_row_length = d_head;
+    int const V_row_length = d_head;
+    int const S_row_length = SGroupNumCols;
     int const O_row_length = d_head;
-    // For alleviating shared memory bank conflicts
-    int const K_row_length = d_head + 4;
 
     float* const Q = sharedMemory;
     float* const K = Q + B_r * Q_row_length;
     float* const V = K + B_c * K_row_length;
-    float* const S = V + B_c * d_head;
-    float* const O = S + B_c * B_r;
+    float* const S = V + numSBlocksInShmAtOnce * B_c * V_row_length;
+    float* const O = S + B_r * S_row_length;
     float4* const Q_float4 = reinterpret_cast<float4*>(Q);
     float4* const K_float4 = reinterpret_cast<float4*>(K);
     float4* const V_float4 = reinterpret_cast<float4*>(V);
@@ -92,64 +96,83 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     float S_row_old_global_sum = 0.0f;
     float S_row_old_global_max = -INFINITY;
 
-    // Iterate horizontally through different S blocks.
-    for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
-        int const num_cols_beyond_this_block_start = N - T_c_index * B_c;
-        int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
-        // Load K using threadIdx.x to help along the d_head dimension (for memory coalescing) and
-        // threadIdx.y to help along the B_c dimension.
-        for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
-            for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
-                int const row_index = T_c_index * B_c + B_c_index;
-                K_float4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
-            }
+    int const top_row_absolute = B_r * blockIdx.x;
+    int const bottow_row_absolute = top_row_absolute + B_r - 1;
+    int const B_r_index = threadIdx.y;
+    int const row_absolute = top_row_absolute + B_r_index;
+    int const column_causal_upper_bound_absolute = row_absolute + 1;
+    bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
+
+    // Iterate horizontally through different S groups.
+    for (int SGroupIndex = 0; SGroupIndex < numSGroups; SGroupIndex++) {
+        int const S_group_left_column_absolute = SGroupIndex * SGroupNumCols;
+        int const S_group_num_cols_beyond_this_group_start = N - S_group_left_column_absolute;
+        int const S_group_max_col_bounds_checked_for_last_column = min(S_row_length, S_group_num_cols_beyond_this_group_start);
+        int const S_group_column_causal_upper_bound = column_causal_upper_bound_absolute - S_group_left_column_absolute;
+        int const S_group_column_upper_bound = min(S_group_column_causal_upper_bound, S_group_max_col_bounds_checked_for_last_column);
+        bool const S_group_start_column_in_row_unmasked = S_group_column_upper_bound > 0;
+
+        if (S_group_left_column_absolute > bottow_row_absolute) {
+            // This entire group is masked out by causal masking.
+            break;
         }
 
-        // Make sure we're done writing Q, K, and V before we read them.
-        __syncthreads();
-
-        int const B_r_index = threadIdx.y;
-        int const top_row_absolute = B_r * blockIdx.x;
-        int const bottow_row_absolute = top_row_absolute + B_r - 1;
-        int const left_column_absolute = T_c_index * B_c;
-
-        if (left_column_absolute > bottow_row_absolute) {
-            // This entire block is masked out by causal masking.
-            goto write_output;
-        }
-
-        bool const row_in_bounds = B_r_index < B_r_bounds_checked_for_last_row;
-        int const row_absolute = top_row_absolute + B_r_index;
-        int const column_upper_bound_absolute = row_absolute + 1;
-        int const column_upper_bound_within_tile = column_upper_bound_absolute - left_column_absolute;
-        int const column_upper_bound = min(column_upper_bound_within_tile, B_c_bounds_checked_for_last_column);
-        bool const start_column_in_row_unmasked = column_upper_bound > 0;
-        bool const col_unmasked = threadIdx.x < column_upper_bound;
         float S_row_new_global_sum;
         float S_row_new_global_max;
-        float S_val_for_thread = 0.0f;
-        if (col_unmasked && row_in_bounds) {
-            // Compute S.
-            #pragma unroll
-            for (int d_index = 0; d_index < d_head / 4; d_index++) {
-                float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + d_index];
-                float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + d_index];
-                S_val_for_thread += Q_val_float4.w * K_val_float4.w;
-                S_val_for_thread += Q_val_float4.x * K_val_float4.x;
-                S_val_for_thread += Q_val_float4.y * K_val_float4.y;
-                S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+        float localSum = 0.0f;
+        float localMax = -INFINITY;
+        for (int SBlockIndex = 0; SBlockIndex < numSBlocksInShmAtOnce; SBlockIndex++) {
+            int const S_block_left_column_absolute = S_group_left_column_absolute + SBlockIndex * B_c;
+            int const S_block_num_cols_beyond_this_block_start = N - S_block_left_column_absolute;
+            int const S_block_B_c_bounds_checked_for_last_column = min(B_c, S_block_num_cols_beyond_this_block_start);
+            int const S_block_column_causal_upper_bound = column_causal_upper_bound_absolute - S_block_left_column_absolute;
+            int const S_block_column_upper_bound = min(S_block_column_causal_upper_bound, S_block_B_c_bounds_checked_for_last_column);
+
+            if (S_block_left_column_absolute > bottow_row_absolute) {
+                // This entire block is masked out by causal masking.
+                break;
             }
-            S_val_for_thread = S_val_for_thread / temperature;
-            S[B_r_index * B_c + threadIdx.x] = S_val_for_thread;
+
+            // Load K using threadIdx.x to help along the d_head dimension (for memory coalescing) and
+            // threadIdx.y to help along the B_c dimension.
+            for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
+                for (int B_c_index = threadIdx.y; B_c_index < S_block_B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
+                    int const row_index = S_block_left_column_absolute + B_c_index;
+                    K_float4[B_c_index * (K_row_length / 4) + d_index] = K_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                }
+            }
+
+            // Make sure we're done writing Q and K before we read them.
+            __syncthreads();
+
+            bool const col_unmasked = threadIdx.x < S_block_column_upper_bound;
+            float S_val_for_thread = 0.0f;
+            if (col_unmasked && row_in_bounds) {
+                // Compute S.
+                #pragma unroll 8
+                for (int d_index = 0; d_index < d_head / 4; d_index++) {
+                    // Offset column index by threadIdx.x to alleviate shared memory bank conflicts.
+                    float4 const Q_val_float4 = Q_float4[B_r_index * (Q_row_length / 4) + ((d_index + threadIdx.x) % (Q_row_length / 4))];
+                    float4 const K_val_float4 = K_float4[threadIdx.x * (K_row_length / 4) + ((d_index + threadIdx.x) % (K_row_length / 4))];
+                    S_val_for_thread += Q_val_float4.w * K_val_float4.w;
+                    S_val_for_thread += Q_val_float4.x * K_val_float4.x;
+                    S_val_for_thread += Q_val_float4.y * K_val_float4.y;
+                    S_val_for_thread += Q_val_float4.z * K_val_float4.z;
+                }
+                S_val_for_thread = S_val_for_thread / temperature;
+                S[B_r_index * S_row_length + SBlockIndex * B_c + threadIdx.x] = S_val_for_thread;
+                localSum = onlineSoftmaxSum(localMax, localSum, S_val_for_thread, 1.0);
+                localMax = max(localMax, S_val_for_thread);
+            }
+
+            // Make sure we're done reading K before we write it.
+            __syncthreads();
         }
 
-        float localSum;
-        float localMax;
-        if (row_in_bounds && start_column_in_row_unmasked) {
+        //Compute localSum and localMax on threadIdx.x = 0.
+        if (row_in_bounds && S_group_start_column_in_row_unmasked) {
             // Gather the values for localSum and localMax on threadIdx.x == 0.
             // ASSUMPTION: blockDim.x == 32
-            localSum = col_unmasked ? 1.0f : 0.0f;
-            localMax = col_unmasked ? S_val_for_thread : -INFINITY;
             for (int numActiveThreads = THREADS_PER_WARP / 2; numActiveThreads >= 1; numActiveThreads /= 2) {
                 float const incomingSum = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localSum, numActiveThreads);
                 float const incomingMax = __shfl_down_sync(ALL_THREADS_IN_WARP_MASK, localMax, numActiveThreads);
@@ -158,16 +181,18 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             }
         }
 
-        // Load V.
+        // Load V
+        // Use the same upper bound for rows of V as we do for columns of S.
+        int const V_height_bounds_checked_for_last_row = min(numSBlocksInShmAtOnce * B_c, S_group_num_cols_beyond_this_group_start);
         for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
-            for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
-                int const row_index = T_c_index * B_c + B_c_index;
-                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+            for (int V_height_index = threadIdx.y; V_height_index < V_height_bounds_checked_for_last_row; V_height_index += blockDim.y) {
+                int const row_index = S_group_left_column_absolute + V_height_index;
+                V_float4[V_height_index * (V_row_length / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
             }
         }
 
-        if (row_in_bounds && start_column_in_row_unmasked) {
-            // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
+        // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the warp.
+        if (row_in_bounds && S_group_start_column_in_row_unmasked) {
             localSum = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, 0);
             localMax = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, 0);
 
@@ -175,17 +200,21 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
             S_row_new_global_max = max(localMax, S_row_old_global_max);
         }
 
-        // Make sure we're done writing S before we read it.
+        // Make sure we're done writing V before we read it.
         __syncthreads();
 
-        if (row_in_bounds && start_column_in_row_unmasked) {
+        if (row_in_bounds && S_group_start_column_in_row_unmasked) {
             // Compute P and O
+            int const column_causal_upper_bound_within_group = column_causal_upper_bound_absolute - S_group_left_column_absolute;
+            int const num_cols_beyond_this_group_start = N - S_group_left_column_absolute;
+            int const V_height_bounds_checked_for_last_column = min(numSBlocksInShmAtOnce * B_c, num_cols_beyond_this_group_start);
+            int const V_height_row_upper_bound = min(column_causal_upper_bound_within_group, V_height_bounds_checked_for_last_column);
             for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
                 float PV_val = 0.0f;
-                for (int V_B_c_index = 0; V_B_c_index < column_upper_bound; V_B_c_index++) {
-                    float const S_val = S[B_r_index * B_c + V_B_c_index];
+                for (int V_height_index = 0; V_height_index < V_height_row_upper_bound; V_height_index++) {
+                    float const S_val = S[B_r_index * S_row_length + V_height_index];
                     float const P_val = expf(S_val - S_row_new_global_max);
-                    PV_val += P_val * V[V_B_c_index * d_head + d_index];
+                    PV_val += P_val * V[V_height_index * V_row_length + d_index];
                 }
                 int const OIndexForThread = B_r_index * O_row_length + d_index;
                 O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
@@ -200,7 +229,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     }
 
     // Write O_HBM
-write_output:
     for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
@@ -229,11 +257,11 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
 
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(B_c, B_r);
-    int const sharedMemoryBytes = (B_r * d_head          // Q
-                                   + B_c * (d_head + 4)  // K
-                                   + B_c * d_head        // V
-                                   + B_r * B_c           // S
-                                   + B_r * d_head)       // O
+    int const sharedMemoryBytes = (B_r * d_head                            // Q
+                                   + B_c * d_head                          // K
+                                   + numSBlocksInShmAtOnce * B_c * d_head  // V
+                                   + numSBlocksInShmAtOnce * B_r * B_c     // S
+                                   + B_r * d_head)                         // O
                                   * sizeof(float);
     if (d_head != 64) {
         throw std::invalid_argument("Head dimension must be 64.");
