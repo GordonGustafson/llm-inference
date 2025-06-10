@@ -160,10 +160,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         }
 
         // Load V.
-        for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
+        for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                V_float4[B_c_index * (d_head / 4) + d_index] = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                V[(B_c_index / 4) * 4 * d_head + d_index * 4 + (B_c_index % 4)] = V_HBM[row_index * d_model + d_min_for_head + d_index];
             }
         }
 
@@ -186,14 +186,27 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 int V_B_c_index = 0;
                 for (; V_B_c_index < (column_upper_bound / 4) * 4; V_B_c_index += 4) {
                     float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
-                    PV_val += expf(S_val_float4.x - S_row_new_global_max) * V[(V_B_c_index + 0) * d_head + d_index];
-                    PV_val += expf(S_val_float4.y - S_row_new_global_max) * V[(V_B_c_index + 1) * d_head + d_index];
-                    PV_val += expf(S_val_float4.z - S_row_new_global_max) * V[(V_B_c_index + 2) * d_head + d_index];
-                    PV_val += expf(S_val_float4.w - S_row_new_global_max) * V[(V_B_c_index + 3) * d_head + d_index];
+                    float4 const V_val_float4 = V_float4[(V_B_c_index / 4) * d_head + d_index];
+                    PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
+                    PV_val += expf(S_val_float4.y - S_row_new_global_max) * V_val_float4.y;
+                    PV_val += expf(S_val_float4.z - S_row_new_global_max) * V_val_float4.z;
+                    PV_val += expf(S_val_float4.w - S_row_new_global_max) * V_val_float4.w;
                 }
-                for (; V_B_c_index < column_upper_bound; V_B_c_index += 1) {
-                    float const S_val = S[B_r_index * B_c + V_B_c_index];
-                    PV_val += expf(S_val - S_row_new_global_max) * V[V_B_c_index * d_head + d_index];
+                if (V_B_c_index + 3 == column_upper_bound) {
+                    float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
+                    float4 const V_val_float4 = V_float4[(V_B_c_index / 4) * d_head + d_index];
+                    PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
+                    PV_val += expf(S_val_float4.y - S_row_new_global_max) * V_val_float4.y;
+                    PV_val += expf(S_val_float4.z - S_row_new_global_max) * V_val_float4.z;
+                } else if (V_B_c_index + 2 == column_upper_bound) {
+                    float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
+                    float4 const V_val_float4 = V_float4[(V_B_c_index / 4) * d_head + d_index];
+                    PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
+                    PV_val += expf(S_val_float4.y - S_row_new_global_max) * V_val_float4.y;
+                } else if (V_B_c_index + 1 == column_upper_bound) {
+                    float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
+                    float4 const V_val_float4 = V_float4[(V_B_c_index / 4) * d_head + d_index];
+                    PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
                 }
                 int const OIndexForThread = B_r_index * O_row_length + d_index;
                 O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
