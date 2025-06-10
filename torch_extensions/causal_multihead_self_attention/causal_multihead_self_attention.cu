@@ -160,10 +160,14 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
         }
 
         // Load V.
-        for (int d_index = threadIdx.x; d_index < d_head; d_index += blockDim.x) {
+        for (int d_index = threadIdx.x; d_index < (d_head / 4); d_index += blockDim.x) {
             for (int B_c_index = threadIdx.y; B_c_index < B_c_bounds_checked_for_last_column; B_c_index += blockDim.y) {
                 int const row_index = T_c_index * B_c + B_c_index;
-                V[(B_c_index / 4) * 4 * d_head + d_index * 4 + (B_c_index % 4)] = V_HBM[row_index * d_model + d_min_for_head + d_index];
+                float4 const V_val_float4 = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
+                V[(B_c_index / 4) * 4 * d_head + d_index * 16 + 0  + (B_c_index % 4)] = V_val_float4.x;
+                V[(B_c_index / 4) * 4 * d_head + d_index * 16 + 4  + (B_c_index % 4)] = V_val_float4.y;
+                V[(B_c_index / 4) * 4 * d_head + d_index * 16 + 8  + (B_c_index % 4)] = V_val_float4.z;
+                V[(B_c_index / 4) * 4 * d_head + d_index * 16 + 12 + (B_c_index % 4)] = V_val_float4.w;
             }
         }
 
