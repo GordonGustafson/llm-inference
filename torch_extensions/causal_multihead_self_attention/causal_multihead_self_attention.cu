@@ -62,11 +62,12 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
     int const O_row_length = d_head;
     // For alleviating shared memory bank conflicts
     int const K_row_length = d_head + 4;
+    int const V_row_length = B_c + 4;
 
     float* const Q = sharedMemory;
     float* const K = Q + B_r * Q_row_length;
     float* const V = K + B_c * K_row_length;
-    float* const S = V + B_c * d_head;
+    float* const S = V + d_head * V_row_length;
     float* const O = S + B_c * B_r;
     float4* const Q_float4 = reinterpret_cast<float4*>(Q);
     float4* const K_float4 = reinterpret_cast<float4*>(K);
@@ -165,10 +166,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 int const row_index = T_c_index * B_c + B_c_index;
                 float4 const V_val_float4 = V_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
                 // Store V transposed so we can read with float4 later.
-                V[(4 * d_index + 0) * B_c + B_c_index] = V_val_float4.x;
-                V[(4 * d_index + 1) * B_c + B_c_index] = V_val_float4.y;
-                V[(4 * d_index + 2) * B_c + B_c_index] = V_val_float4.z;
-                V[(4 * d_index + 3) * B_c + B_c_index] = V_val_float4.w;
+                V[(4 * d_index + 0) * V_row_length + B_c_index] = V_val_float4.x;
+                V[(4 * d_index + 1) * V_row_length + B_c_index] = V_val_float4.y;
+                V[(4 * d_index + 2) * V_row_length + B_c_index] = V_val_float4.z;
+                V[(4 * d_index + 3) * V_row_length + B_c_index] = V_val_float4.w;
             }
         }
 
@@ -191,7 +192,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 int V_B_c_index = 0;
                 for (; V_B_c_index < (column_upper_bound / 4) * 4; V_B_c_index += 4) {
                     float4 const S_val_float4 = S_float4[B_r_index * (B_c / 4) + (V_B_c_index / 4)];
-                    float4 const V_val_float4 = V_float4[d_index * (B_c / 4) + (V_B_c_index / 4)];
+                    float4 const V_val_float4 = V_float4[d_index * (V_row_length / 4) + (V_B_c_index / 4)];
                     PV_val += expf(S_val_float4.x - S_row_new_global_max) * V_val_float4.x;
                     PV_val += expf(S_val_float4.y - S_row_new_global_max) * V_val_float4.y;
                     PV_val += expf(S_val_float4.z - S_row_new_global_max) * V_val_float4.z;
@@ -199,7 +200,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,
                 }
                 for (; V_B_c_index < column_upper_bound; V_B_c_index += 1) {
                     float const S_val = S[B_r_index * B_c + V_B_c_index];
-                    PV_val += expf(S_val - S_row_new_global_max) * V[d_index * B_c + V_B_c_index];
+                    PV_val += expf(S_val - S_row_new_global_max) * V[d_index * V_row_length + V_B_c_index];
                 }
                 int const OIndexForThread = B_r_index * O_row_length + d_index;
                 O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + PV_val) / S_row_new_global_sum;
@@ -245,7 +246,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     dim3 const threadsPerBlock(B_c, B_r);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 4)  // K
-                                   + B_c * d_head        // V
+                                   + (B_c + 4) * d_head  // V
                                    + B_r * B_c           // S
                                    + B_r * d_head)       // O
                                   * sizeof(float);
