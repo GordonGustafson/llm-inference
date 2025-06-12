@@ -47,10 +47,10 @@ __device__ static inline float onlineSoftmaxSum(float const maxA,
 }
 
 template <int d_head, int d_model, int B_c, int B_r>
-__global__ void causal_multihead_self_attention_kernel(float const* const Q_HBM,  // size Nxd_model
-                                                       float const* const K_HBM,  // size Nxd_model
-                                                       float const* const V_HBM,  // size Nxd_model
-                                                       float* const O_HBM,        // size Nxd_model
+__global__ void causal_multihead_self_attention_kernel(float const* const __restrict__ Q_HBM,  // size Nxd_model
+                                                       float const* const __restrict__ K_HBM,  // size Nxd_model
+                                                       float const* const __restrict__ V_HBM,  // size Nxd_model
+                                                       float* const __restrict__ O_HBM,        // size Nxd_model
                                                        int const N) {
     extern __shared__ float sharedMemory[];
     int const T_c = CEIL_DIV(N, B_c);
