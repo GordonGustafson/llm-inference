@@ -1,4 +1,4 @@
-from causal_self_attention import ScaledDotProductAttentionBackend
+from causal_self_attention import ScaledDotProductAttentionBackend, ALL_VERSIONED_CUSTOM_CUDA_BACKENDS
 from gpt2 import time_greedy_gpt2_inference
 
 import matplotlib.pyplot as plt
@@ -6,7 +6,7 @@ import torch
 
 if __name__ == "__main__":
     hf_model_name = "openai-community/gpt2"
-    attention_backend_values = [ScaledDotProductAttentionBackend.CUSTOM_CUDA, ScaledDotProductAttentionBackend.NAIVE_PYTORCH]
+    attention_backend_values = ALL_VERSIONED_CUSTOM_CUDA_BACKENDS + [ScaledDotProductAttentionBackend.NAIVE_PYTORCH]
     device = torch.device("cuda")
     prompt = "Hello, I'm a language model,"
     max_tokens_values = [32, 64, 128, 256, 512]
@@ -19,8 +19,7 @@ if __name__ == "__main__":
                                                           device=device,
                                                           prompt=prompt,
                                                           max_tokens=max_tokens)
-            print(f"time elapsed by first run: {inference_timing.first_run_execution_time_seconds} seconds")
-            print(f"time elapsed by second run: {inference_timing.second_run_execution_time_seconds} seconds")
+            print(f"time elapsed for generating {max_tokens} tokens with {attention_backend}: {inference_timing.second_run_execution_time_seconds} seconds")
             print(f"generated text: {inference_timing.generated_text}")
             timing_results[(attention_backend, max_tokens)] = inference_timing.second_run_execution_time_seconds
 

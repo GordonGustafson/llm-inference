@@ -2,13 +2,68 @@ import torch
 from torch import nn
 from enum import Enum
 
-# Import custom torch extension that contains
-# torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch
-import causal_multihead_self_attention
 
 class ScaledDotProductAttentionBackend(Enum):
     NAIVE_PYTORCH = "NAIVE_PYTORCH"
     CUSTOM_CUDA = "CUSTOM_CUDA"
+
+    # Specific versions of the custom cuda implementation.
+    CUSTOM_CUDA_VERSION_1  = "CUSTOM_CUDA_VERSION_1"
+    CUSTOM_CUDA_VERSION_2  = "CUSTOM_CUDA_VERSION_2"
+    CUSTOM_CUDA_VERSION_3  = "CUSTOM_CUDA_VERSION_3"
+    CUSTOM_CUDA_VERSION_4  = "CUSTOM_CUDA_VERSION_4"
+    CUSTOM_CUDA_VERSION_5  = "CUSTOM_CUDA_VERSION_5"
+    CUSTOM_CUDA_VERSION_6  = "CUSTOM_CUDA_VERSION_6"
+    CUSTOM_CUDA_VERSION_7  = "CUSTOM_CUDA_VERSION_7"
+    CUSTOM_CUDA_VERSION_8  = "CUSTOM_CUDA_VERSION_8"
+    CUSTOM_CUDA_VERSION_9  = "CUSTOM_CUDA_VERSION_9"
+    CUSTOM_CUDA_VERSION_10 = "CUSTOM_CUDA_VERSION_10"
+
+
+ALL_VERSIONED_CUSTOM_CUDA_BACKENDS = [ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_1,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_2,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_3,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_4,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_5,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_6,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_7,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_8,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_9,
+                                      ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_10]
+
+
+def load_attention_backend(backend: ScaledDotProductAttentionBackend) -> None:
+    match backend:
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
+            # Import custom torch extension that contains
+            # torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch
+            import causal_multihead_self_attention
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_1:
+            # Import custom torch extension that contains
+            # torch.ops.causal_multihead_self_attention_version_1.causal_multihead_self_attention_torch
+            import causal_multihead_self_attention_version_1
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_2:
+            # etc...
+            import causal_multihead_self_attention_version_2
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_3:
+            import causal_multihead_self_attention_version_3
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_4:
+            import causal_multihead_self_attention_version_4
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_5:
+            import causal_multihead_self_attention_version_5
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_6:
+            import causal_multihead_self_attention_version_6
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_7:
+            import causal_multihead_self_attention_version_7
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_8:
+            import causal_multihead_self_attention_version_8
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_9:
+            import causal_multihead_self_attention_version_9
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_10:
+            import causal_multihead_self_attention_version_10
+        case _:
+            pass
+
 
 def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                  queries: torch.Tensor,
@@ -16,6 +71,13 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                  values: torch.Tensor,
                                  num_heads: int,
                                  causal_mask: torch.Tensor) -> torch.Tensor:
+    if backend != ScaledDotProductAttentionBackend.NAIVE_PYTORCH:
+        # TODO: support batch size > 1
+        # Custom Cuda backend currently requires contiguous tensors.
+        queries = queries.contiguous().squeeze(0)
+        keys = keys.contiguous().squeeze(0)
+        values = values.contiguous().squeeze(0)
+
     match backend:
         case ScaledDotProductAttentionBackend.NAIVE_PYTORCH:
             return scaled_dot_product_attention_naive_pytorch(queries=queries,
@@ -24,15 +86,27 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                                               num_heads=num_heads,
                                                               causal_mask=causal_mask)
         case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
-            # TODO: support batch size > 1
-            # Custom Cuda backend currently requires contiguous tensors.
-            queries = queries.contiguous()
-            keys = keys.contiguous()
-            values = values.contiguous()
-            return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries.squeeze(0),
-                                                                                                   K=keys.squeeze(0),
-                                                                                                   V=values.squeeze(0),
-                                                                                                   num_heads=num_heads).unsqueeze(0)
+            return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_1:
+            return torch.ops.causal_multihead_self_attention_version_1.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_2:
+            return torch.ops.causal_multihead_self_attention_version_2.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_3:
+            return torch.ops.causal_multihead_self_attention_version_3.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_4:
+            return torch.ops.causal_multihead_self_attention_version_4.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_5:
+            return torch.ops.causal_multihead_self_attention_version_5.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_6:
+            return torch.ops.causal_multihead_self_attention_version_6.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_7:
+            return torch.ops.causal_multihead_self_attention_version_7.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_8:
+            return torch.ops.causal_multihead_self_attention_version_8.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_9:
+            return torch.ops.causal_multihead_self_attention_version_9.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
+        case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_10:
+            return torch.ops.causal_multihead_self_attention_version_10.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
         case _:
             raise ValueError("Backend not implemented yet")
 
@@ -73,6 +147,7 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         if d_out % num_heads != 0:
             raise ValueError(f"d_out must be divisible by num_heads. d_out was {d_out} and num_heads was {num_heads}.")
+        load_attention_backend(scaled_dot_product_attention_backend)
 
         self.head_dim = d_out // num_heads
         self.d_out = d_out
