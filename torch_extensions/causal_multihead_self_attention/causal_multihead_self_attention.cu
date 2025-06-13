@@ -101,6 +101,11 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
     // Iterate horizontally through different S blocks.
     for (int T_c_index = 0; T_c_index < T_c; T_c_index++) {
         int const left_column_hbm = T_c_index * B_c;
+        if (left_column_hbm > shm_tile_bottom_row_hbm) {
+            // This entire block is masked out by causal masking.
+            break;
+        }
+
         int const num_cols_beyond_this_block_start = N - left_column_hbm;
         int const B_c_bounds_checked_for_last_column = min(B_c, num_cols_beyond_this_block_start);
         // Load K and V using threadIdx.x to help along the d_head dimension (for memory coalescing) and
@@ -119,10 +124,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
         // Iterate vertically within the S block.
         // Since we use __syncthreads in this loop we have to make sure threads don't exit the function early.
         for (int reg_tile_top_row_shm = threadIdx.y; reg_tile_top_row_shm < CEIL_DIV(B_r_bounds_checked_for_last_row, blockDim.y) * blockDim.y; reg_tile_top_row_shm += blockDim.y) {
-            if (left_column_hbm > shm_tile_bottom_row_hbm) {
-                // This entire block is masked out by causal masking.
-                goto write_output;
-            }
 
             bool const top_row_shm_in_bounds = reg_tile_top_row_shm < B_r_bounds_checked_for_last_row;
             int const top_row_hbm = shm_tile_top_row_hbm + reg_tile_top_row_shm;
@@ -258,7 +259,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
     }
 
     // Write O_HBM
-write_output:
     for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
