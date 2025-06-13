@@ -155,8 +155,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
             float S_registers[NUM_ROWS_PER_THREAD][NUM_COLS_PER_THREAD];
             #pragma unroll
             for (int S_reg_row = 0; S_reg_row < NUM_ROWS_PER_THREAD; S_reg_row++) {
-                float localSum[S_reg_row] = 0.0f;
-                float localMax[S_reg_row] = -INFINITY;
+                localSum[S_reg_row] = 0.0f;
+                localMax[S_reg_row] = -INFINITY;
                 #pragma unroll
                 for (int S_reg_col = 0; S_reg_col < NUM_COLS_PER_THREAD; S_reg_col++) {
                     S_registers[S_reg_row][S_reg_col] = 0.0f;
@@ -228,8 +228,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                 // Broadcast the values for localSum and localMax from threadIdx.x == 0 to the other threads in the half-warp..
                 // See previous warp shuffle comment about skipping bounds checks.
                 int const source_lane = threadIdx.y % 2 == 0 ? 0 : 16;
-                localSum[row] = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum, source_lane);
-                localMax[row] = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax, source_lane);
+                localSum[row] = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localSum[row], source_lane);
+                localMax[row] = __shfl_sync(ALL_THREADS_IN_WARP_MASK, localMax[row], source_lane);
 
                 S_row_new_global_sum[row] = onlineSoftmaxSum(localMax[row], localSum[row], S_row_old_global_max[row], S_row_old_global_sum[row]);
                 S_row_new_global_max[row] = max(localMax[row], S_row_old_global_max[row]);
@@ -261,10 +261,10 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                         #pragma unroll
                         for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
                             S_reg_float4[O_reg_row] = S_float4[(reg_tile_top_row_shm + O_reg_row) * (B_c / 4) + (V_B_c_index / 4)];
-                            S_val_float4[O_reg_row].x = expf(S_val_float4[O_reg_row].x - S_row_new_global_max);
-                            S_val_float4[O_reg_row].y = expf(S_val_float4[O_reg_row].y - S_row_new_global_max);
-                            S_val_float4[O_reg_row].z = expf(S_val_float4[O_reg_row].z - S_row_new_global_max);
-                            S_val_float4[O_reg_row].w = expf(S_val_float4[O_reg_row].w - S_row_new_global_max);
+                            S_reg_float4[O_reg_row].x = expf(S_reg_float4[O_reg_row].x - S_row_new_global_max[O_reg_row]);
+                            S_reg_float4[O_reg_row].y = expf(S_reg_float4[O_reg_row].y - S_row_new_global_max[O_reg_row]);
+                            S_reg_float4[O_reg_row].z = expf(S_reg_float4[O_reg_row].z - S_row_new_global_max[O_reg_row]);
+                            S_reg_float4[O_reg_row].w = expf(S_reg_float4[O_reg_row].w - S_row_new_global_max[O_reg_row]);
                         }
 
                         #pragma unroll
@@ -275,22 +275,22 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                             float const V_reg_w = V[(V_B_c_index + 3) * d_head + d_index + O_reg_col];
                             #pragma unroll
                             for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
-                                O_registers[O_reg_row][O_reg_col] += S_val_float4[O_reg_row].x * V_reg_x;
-                                O_registers[O_reg_row][O_reg_col] += S_val_float4[O_reg_row].y * V_reg_y;
-                                O_registers[O_reg_row][O_reg_col] += S_val_float4[O_reg_row].z * V_reg_z;
-                                O_registers[O_reg_row][O_reg_col] += S_val_float4[O_reg_row].w * V_reg_w;
+                                O_registers[O_reg_row][O_reg_col] += S_reg_float4[O_reg_row].x * V_reg_x;
+                                O_registers[O_reg_row][O_reg_col] += S_reg_float4[O_reg_row].y * V_reg_y;
+                                O_registers[O_reg_row][O_reg_col] += S_reg_float4[O_reg_row].z * V_reg_z;
+                                O_registers[O_reg_row][O_reg_col] += S_reg_float4[O_reg_row].w * V_reg_w;
                             }
                         }
                     }
 
                     // Compute O vals in a "stride" of 1 element at a time.
                     for (; V_B_c_index < reg_tile_bottom_row_column_upper_bound_shm; V_B_c_index += 1) {
-                        float4 S_reg[NUM_ROWS_PER_THREAD];
+                        float S_reg[NUM_ROWS_PER_THREAD];
 
                         #pragma unroll
                         for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
-                            float S_reg[O_reg_row] = S[(reg_tile_top_row_shm + O_reg_row) * B_c + V_B_c_index];
-                            S_reg[O_reg_row] = expf(S_reg[O_reg_row] - S_row_new_global_max);
+                            S_reg[O_reg_row] = S[(reg_tile_top_row_shm + O_reg_row) * B_c + V_B_c_index];
+                            S_reg[O_reg_row] = expf(S_reg[O_reg_row] - S_row_new_global_max[O_reg_row]);
                         }
 
                         #pragma unroll
@@ -313,7 +313,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                         #pragma unroll
                         for (int O_reg_col = 0; O_reg_col < NUM_COLS_PER_THREAD; O_reg_col++) {
                             int const OIndexForThread = (reg_tile_top_row_shm + O_reg_row) * O_row_length + d_index + O_reg_col;
-                            O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max - S_row_new_global_max) * S_row_old_global_sum + O_registers[O_reg_col]) / S_row_new_global_sum;
+                            O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max[O_reg_row] - S_row_new_global_max[O_reg_row]) * S_row_old_global_sum[O_reg_row] + O_registers[O_reg_row][O_reg_col]) / S_row_new_global_sum[O_reg_row];
                         }
                     }
                 }
