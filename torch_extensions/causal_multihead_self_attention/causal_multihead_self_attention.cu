@@ -354,11 +354,11 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int const d_head = d_model / num_heads;
 
     int constexpr B_c = 32;
-    int constexpr B_r = 32;
+    int constexpr B_r = 64;
     int const T_r = CEIL_DIV(N, B_r);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(16, B_r);
+    dim3 const threadsPerBlock(16, 32);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 4)  // K
                                    + B_c * d_head        // V
