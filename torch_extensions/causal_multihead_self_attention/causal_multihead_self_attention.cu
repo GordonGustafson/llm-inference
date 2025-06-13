@@ -125,14 +125,15 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
         // Since we use __syncthreads in this loop we have to make sure threads don't exit the function early.
         for (int reg_tile_top_row_shm = threadIdx.y; reg_tile_top_row_shm < CEIL_DIV(B_r_bounds_checked_for_last_row, blockDim.y) * blockDim.y; reg_tile_top_row_shm += blockDim.y) {
 
-            bool const top_row_shm_in_bounds = reg_tile_top_row_shm < B_r_bounds_checked_for_last_row;
-            int const top_row_hbm = shm_tile_top_row_hbm + reg_tile_top_row_shm;
-            int const top_row_column_causal_upper_bound_hbm = top_row_hbm + 1;
-            int const top_row_column_upper_bound_shm = min(top_row_column_causal_upper_bound_hbm - left_column_hbm,
-                                                           B_c_bounds_checked_for_last_column);
-            bool const start_column_in_row_unmasked = top_row_column_upper_bound_shm > 0;
-            int const left_S_val_column = NUM_COLS_PER_THREAD * threadIdx.x;
-            bool const left_S_val_unmasked = left_S_val_column < top_row_column_upper_bound_shm;
+            bool const reg_tile_top_row_shm_in_bounds = reg_tile_top_row_shm < B_r_bounds_checked_for_last_row;
+            int const reg_tile_top_row_hbm = shm_tile_top_row_hbm + reg_tile_top_row_shm;
+            int const reg_tile_top_row_column_causal_upper_bound_hbm = reg_tile_top_row_hbm + 1;
+            int const reg_tile_top_row_column_upper_bound_shm = min(reg_tile_top_row_column_causal_upper_bound_hbm - left_column_hbm,
+                                                                    B_c_bounds_checked_for_last_column);
+
+            bool const start_column_in_row_unmasked = reg_tile_top_row_column_upper_bound_shm > 0;
+            int const reg_tile_left_column_shm = NUM_COLS_PER_THREAD * threadIdx.x;
+            bool const re_tile_top_left_corner_unmasked = reg_tile_left_column_shm < reg_tile_top_row_column_upper_bound_shm;
 
             float S_row_new_global_sum;
             float S_row_new_global_max;
@@ -146,7 +147,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                 S_registers[S_reg_col] = 0.0f;
             }
 
-            if (top_row_shm_in_bounds && left_S_val_unmasked) {
+            if (reg_tile_top_row_shm_in_bounds && re_tile_top_left_corner_unmasked) {
                 // Compute S.
                 #pragma unroll
                 for (int d_index = 0; d_index < d_head / 4; d_index++) {
@@ -154,7 +155,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
 
                     #pragma unroll
                     for (int S_reg_col = 0; S_reg_col < NUM_COLS_PER_THREAD; S_reg_col++) {
-                        int const S_val_column = left_S_val_column + S_reg_col;
+                        int const S_val_column = reg_tile_left_column_shm + S_reg_col;
                         float4 const K_val_float4 = K_float4[S_val_column * (K_row_length / 4) + d_index];
                         S_registers[S_reg_col] += Q_val_float4.w * K_val_float4.w;
                         S_registers[S_reg_col] += Q_val_float4.x * K_val_float4.x;
@@ -166,8 +167,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                 // Write S to shared memory and compute localSum and localMax.
                 #pragma unroll
                 for (int S_reg_col = 0; S_reg_col < NUM_COLS_PER_THREAD; S_reg_col++) {
-                    int const S_val_column = left_S_val_column + S_reg_col;
-                    bool const S_val_unmasked = S_val_column < top_row_column_upper_bound_shm;
+                    int const S_val_column = reg_tile_left_column_shm + S_reg_col;
+                    bool const S_val_unmasked = S_val_column < reg_tile_top_row_column_upper_bound_shm;
                     if (S_val_unmasked) {
                         S_registers[S_reg_col] = S_registers[S_reg_col] / temperature;
                         S[reg_tile_top_row_shm * B_c + S_val_column] = S_registers[S_reg_col];
@@ -202,7 +203,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
             // Make sure we're done writing S before we read it.
             __syncthreads();
 
-            if (top_row_shm_in_bounds && start_column_in_row_unmasked) {
+            if (reg_tile_top_row_shm_in_bounds && start_column_in_row_unmasked) {
                 // Compute P and O
                 for (int d_index = threadIdx.x * NUM_COLS_PER_THREAD; d_index < d_head; d_index += blockDim.x * NUM_COLS_PER_THREAD) {
                     float O_registers[NUM_COLS_PER_THREAD];
@@ -214,7 +215,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
 
                     // Compute O vals in "strides" of 4 elements at a time.
                     int V_B_c_index = 0;
-                    for (; V_B_c_index < (top_row_column_upper_bound_shm / 4) * 4; V_B_c_index += 4) {
+                    for (; V_B_c_index < (reg_tile_top_row_column_upper_bound_shm / 4) * 4; V_B_c_index += 4) {
                         float4 S_val_float4 = S_float4[reg_tile_top_row_shm * (B_c / 4) + (V_B_c_index / 4)];
                         S_val_float4.x = expf(S_val_float4.x - S_row_new_global_max);
                         S_val_float4.y = expf(S_val_float4.y - S_row_new_global_max);
@@ -231,7 +232,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                     }
 
                     // Compute O vals in a "stride" of 1 element at a time.
-                    for (; V_B_c_index < top_row_column_upper_bound_shm; V_B_c_index += 1) {
+                    for (; V_B_c_index < reg_tile_top_row_column_upper_bound_shm; V_B_c_index += 1) {
                         float S_val = S[reg_tile_top_row_shm * B_c + V_B_c_index];
                         S_val = expf(S_val - S_row_new_global_max);
 
