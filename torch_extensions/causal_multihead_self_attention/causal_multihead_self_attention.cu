@@ -274,8 +274,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
                                      int const N,
                                      int const d_model,
                                      int const num_heads) {
-    int maxSharedMemory;
-    gpuErrchk(cudaDeviceGetAttribute(&maxSharedMemory, cudaDevAttrMaxSharedMemoryPerBlock, 0));
+    // 64KB is available on Turing GPUs. Change this if using a GPU with a larger value.
+    int maxSharedMemory = 65536;
 
     int const d_head = d_model / num_heads;
 
