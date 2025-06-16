@@ -63,8 +63,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
     int const d_min_for_head = blockIdx.y * d_head;
     int const Q_row_length = d_head;
     int const O_row_length = d_model;
-    // For alleviating shared memory bank conflicts
-    int const K_row_length = d_head + 4;
+    int const K_row_length = d_head;
 
     float* const Q = sharedMemory;
     float* const K = Q + B_r * Q_row_length;
@@ -168,13 +167,13 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                     float4 Q_reg_float4[NUM_ROWS_PER_THREAD];
                     #pragma unroll
                     for (int S_reg_row = 0; S_reg_row < NUM_ROWS_PER_THREAD; S_reg_row++) {
-                        Q_reg_float4[S_reg_row] = Q_float4[(reg_tile_top_row_shm + S_reg_row) * (Q_row_length / 4) + d_index];
+                        Q_reg_float4[S_reg_row] = Q_float4[(reg_tile_top_row_shm + S_reg_row) * (Q_row_length / 4) + ((d_index + threadIdx.x) % (Q_row_length / 4))];
                     }
 
                     #pragma unroll
                     for (int S_reg_col = 0; S_reg_col < NUM_COLS_PER_THREAD; S_reg_col++) {
                         int const S_col_shm = reg_tile_left_column_shm + S_reg_col;
-                        float4 const K_reg_float4 = K_float4[S_col_shm * (K_row_length / 4) + d_index];
+                        float4 const K_reg_float4 = K_float4[S_col_shm * (K_row_length / 4) + ((d_index + threadIdx.x) % (K_row_length / 4))];
                         #pragma unroll
                         for (int S_reg_row = 0; S_reg_row < NUM_ROWS_PER_THREAD; S_reg_row++) {
                             S_registers[S_reg_row][S_reg_col] += Q_reg_float4[S_reg_row].w * K_reg_float4.w;
@@ -362,7 +361,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(16, 32);
     int const sharedMemoryBytes = (B_r * d_head          // Q
-                                   + B_c * (d_head + 4)  // K
+                                   + B_c * d_head        // K
                                    + B_c * d_head        // V
                                    + B_r * B_c)          // S
                                   * sizeof(float);
