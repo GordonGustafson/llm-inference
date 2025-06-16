@@ -62,7 +62,7 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
     int const B_r_bounds_checked_for_last_row = min(B_r, N - blockIdx.x * B_r);
     int const d_min_for_head = blockIdx.y * d_head;
     int const Q_row_length = d_head;
-    int const O_row_length = d_head;
+    int const O_row_length = d_model;
     // For alleviating shared memory bank conflicts
     int const K_row_length = d_head + 4;
 
@@ -70,16 +70,13 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
     float* const K = Q + B_r * Q_row_length;
     float* const V = K + B_c * K_row_length;
     float* const S = V + B_c * d_head;
-    float* const O = S + B_c * B_r;
     float4* const Q_float4 = reinterpret_cast<float4*>(Q);
     float4* const K_float4 = reinterpret_cast<float4*>(K);
     float4* const V_float4 = reinterpret_cast<float4*>(V);
     float4* const S_float4 = reinterpret_cast<float4*>(S);
-    float4* const O_float4 = reinterpret_cast<float4*>(O);
     float4 const* const Q_HBM_float4 = reinterpret_cast<float4 const*>(Q_HBM);
     float4 const* const K_HBM_float4 = reinterpret_cast<float4 const*>(K_HBM);
     float4 const* const V_HBM_float4 = reinterpret_cast<float4 const*>(V_HBM);
-    float4* const O_HBM_float4 = reinterpret_cast<float4*>(O_HBM);
 
     float4 const zero_float4 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -89,7 +86,6 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
             Q_float4[B_r_index * (Q_row_length/4) + d_index] = Q_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index];
-            O_float4[B_r_index * (O_row_length/4) + d_index] = zero_float4;
         }
     }
 
@@ -318,10 +314,13 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                     // Compute and write O values
                     #pragma unroll
                     for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
-                        #pragma unroll
-                        for (int O_reg_col = 0; O_reg_col < NUM_COLS_PER_THREAD; O_reg_col++) {
-                            int const OIndexForThread = (reg_tile_top_row_shm + O_reg_row) * O_row_length + d_index + O_reg_col;
-                            O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max[O_reg_row] - S_row_new_global_max[O_reg_row]) * S_row_old_global_sum[O_reg_row] + O_registers[O_reg_row][O_reg_col]) / S_row_new_global_sum[O_reg_row];
+                        int const row_hbm = reg_tile_top_row_hbm + O_reg_row;
+                        if (row_hbm < N) {
+                            #pragma unroll
+                            for (int O_reg_col = 0; O_reg_col < NUM_COLS_PER_THREAD; O_reg_col++) {
+                                int const OIndexForThread = row_hbm * O_row_length + d_min_for_head + d_index + O_reg_col;
+                                O_HBM[OIndexForThread] = (O_HBM[OIndexForThread] * expf(S_row_old_global_max[O_reg_row] - S_row_new_global_max[O_reg_row]) * S_row_old_global_sum[O_reg_row] + O_registers[O_reg_row][O_reg_col]) / S_row_new_global_sum[O_reg_row];
+                            }
                         }
                     }
                 }
@@ -333,16 +332,8 @@ __global__ void causal_multihead_self_attention_kernel(float const* const __rest
                 S_row_old_global_max[row] = S_row_new_global_max[row];
             }
 
-            // Make sure we're done reading S, Q, K, and V before we write them, and done writing O before we read it.
+            // Make sure we're done reading S, Q, K, and V before we write them.
             __syncthreads();
-        }
-    }
-
-    // Write O_HBM
-    for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
-        for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
-            int const row_index = blockIdx.x * B_r + B_r_index;
-            O_HBM_float4[row_index * (d_model / 4) + (d_min_for_head / 4) + d_index] = O_float4[B_r_index * (O_row_length/4) + d_index];
         }
     }
 }
@@ -365,13 +356,15 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int constexpr B_r = 64;
     int const T_r = CEIL_DIV(N, B_r);
 
+    float* zeroFloats = new float[N * d_model]();
+    gpuErrchk(cudaMemcpy(output, zeroFloats, N * d_model * sizeof(float), cudaMemcpyHostToDevice));
+
     dim3 const blocksPerGrid(T_r, num_heads);
     dim3 const threadsPerBlock(16, 32);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 4)  // K
                                    + B_c * d_head        // V
-                                   + B_r * B_c           // S
-                                   + B_r * d_head)       // O
+                                   + B_r * B_c)          // S
                                   * sizeof(float);
     if (d_head != 64) {
         throw std::invalid_argument("Head dimension must be 64.");
@@ -403,6 +396,8 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     std::cout << "d_head: " << d_head << std::endl;
     std::cout << "num_heads: " << num_heads << std::endl;
 #endif
+
+    delete [] zeroFloats;
 }
 
 torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
