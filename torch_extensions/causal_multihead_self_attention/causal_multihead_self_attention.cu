@@ -14,7 +14,7 @@
 #define THREADS_PER_WARP 32
 
 int constexpr NUM_COLS_PER_THREAD = 2;
-int constexpr NUM_ROWS_PER_THREAD = 2;
+int constexpr NUM_ROWS_PER_THREAD = 4;
 unsigned int constexpr ALL_THREADS_IN_WARP_MASK = 0xffffffffu;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -366,7 +366,7 @@ void causal_multihead_self_attention(float const* const Q,  // size Nxd
     int const T_r = CEIL_DIV(N, B_r);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(16, 32);
+    dim3 const threadsPerBlock(16, 16);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 4)  // K
                                    + B_c * d_head        // V
