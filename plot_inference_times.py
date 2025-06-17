@@ -35,6 +35,9 @@ if __name__ == "__main__":
         plt.plot(max_tokens_values, timings, label=f"{attention_backend.name}")
 
     plt.legend()
+    plt.title("GPT-small Inference Timings")
+    plt.xlabel("Num Tokens Generated")
+    plt.ylabel("Time Elapsed (Seconds)")
     plt.savefig("inference-times.png")
     plt.clf()
 
@@ -45,4 +48,7 @@ if __name__ == "__main__":
         plt.plot(max_tokens_values, memory_used, label=f"{attention_backend.name}")
 
     plt.legend()
+    plt.title("GPT-small Memory Usage")
+    plt.xlabel("Num Tokens Generated")
+    plt.ylabel("Peak Memory Usage (Bytes)")
     plt.savefig("memory-usage.png")
