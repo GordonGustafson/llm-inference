@@ -14,6 +14,7 @@ if __name__ == "__main__":
     max_tokens_values = [32, 64, 128, 256, 512]
 
     timing_results = {}
+    max_memory_allocated_results = {}
     for attention_backend in attention_backend_values:
         for max_tokens in max_tokens_values:
             inference_timing = time_greedy_gpt2_inference(hf_model_name=hf_model_name,
@@ -24,8 +25,10 @@ if __name__ == "__main__":
             print(f"time elapsed for generating {max_tokens} tokens with {attention_backend}: {inference_timing.second_run_execution_time_seconds} seconds")
             print(f"generated text: {inference_timing.generated_text}")
             timing_results[(attention_backend, max_tokens)] = inference_timing.second_run_execution_time_seconds
+            max_memory_allocated_results[(attention_backend, max_tokens)] = inference_timing.max_gpu_memory_allocated_bytes
 
     print(timing_results)
+    print(max_memory_allocated_results)
 
     for attention_backend in attention_backend_values:
         timings = [timing_results[(attention_backend, max_tokens)] for max_tokens in max_tokens_values]
@@ -33,3 +36,13 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.savefig("inference-times.png")
+    plt.clf()
+
+    for attention_backend in [ScaledDotProductAttentionBackend.NAIVE_PYTORCH,
+                              ScaledDotProductAttentionBackend.PYTORCH_SDPA_EFFICIENT_ATTENTION,
+                              ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_10]:
+        memory_used = [max_memory_allocated_results[(attention_backend, max_tokens)] for max_tokens in max_tokens_values]
+        plt.plot(max_tokens_values, memory_used, label=f"{attention_backend.name}")
+
+    plt.legend()
+    plt.savefig("memory-usage.png")

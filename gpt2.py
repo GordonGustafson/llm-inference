@@ -86,6 +86,7 @@ def make_gpt_model(hf_model_name: str,
 class InferenceTiming:
     first_run_execution_time_seconds: float
     second_run_execution_time_seconds: float
+    max_gpu_memory_allocated_bytes: int
     generated_text: str
 
 def time_greedy_gpt2_inference(hf_model_name: str,
@@ -113,6 +114,7 @@ def time_greedy_gpt2_inference(hf_model_name: str,
     first_run_execution_time_seconds = (end_time_ns - start_time_ns) / (10 ** 9)
 
     torch.manual_seed(0)
+    torch.cuda.reset_peak_memory_stats(device)
 
     print("Executing timed run...")
     start_time_ns = time.perf_counter_ns()
@@ -123,9 +125,11 @@ def time_greedy_gpt2_inference(hf_model_name: str,
                                     device=device)
     end_time_ns = time.perf_counter_ns()
     second_run_execution_time_seconds = (end_time_ns - start_time_ns) / (10 ** 9)
+    max_gpu_memory_allocated_bytes = torch.cuda.max_memory_allocated(device=device)
 
     return InferenceTiming(first_run_execution_time_seconds=first_run_execution_time_seconds,
                            second_run_execution_time_seconds=second_run_execution_time_seconds,
+                           max_gpu_memory_allocated_bytes=max_gpu_memory_allocated_bytes,
                            generated_text=generated_text)
 
 
@@ -136,4 +140,5 @@ if __name__ == "__main__":
                                                   prompt="Hello, I'm a language model,",
                                                   max_tokens=512)
     print(f"Inference time: {inference_timing.second_run_execution_time_seconds} seconds")
-    print(f"Generated text: {inference_timing.generated_text} seconds")
+    print(f"Max gpu memory allocated: {inference_timing.max_gpu_memory_allocated_bytes // 1024} Kilobytes")
+    print(f"Generated text: {inference_timing.generated_text}")
