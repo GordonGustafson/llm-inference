@@ -6,7 +6,9 @@ import torch
 
 if __name__ == "__main__":
     hf_model_name = "openai-community/gpt2"
-    attention_backend_values = ALL_VERSIONED_CUSTOM_CUDA_BACKENDS + [ScaledDotProductAttentionBackend.NAIVE_PYTORCH]
+    attention_backend_values = (ALL_VERSIONED_CUSTOM_CUDA_BACKENDS
+                                + [ScaledDotProductAttentionBackend.NAIVE_PYTORCH,
+                                   ScaledDotProductAttentionBackend.PYTORCH_SDPA_EFFICIENT_ATTENTION])
     device = torch.device("cuda")
     prompt = "Hello, I'm a language model,"
     max_tokens_values = [32, 64, 128, 256, 512]

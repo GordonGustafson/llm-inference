@@ -6,6 +6,10 @@ from enum import Enum
 class ScaledDotProductAttentionBackend(Enum):
     NAIVE_PYTORCH = "NAIVE_PYTORCH"
     CUSTOM_CUDA = "CUSTOM_CUDA"
+    PYTORCH_SDPA_MATH = "PYTORCH_SDPA_MATH"
+    PYTORCH_SDPA_FLASH_ATTENTION = "PYTORCH_SDPA_FLASH_ATTENTION"
+    PYTORCH_SDPA_EFFICIENT_ATTENTION = "PYTORCH_SDPA_EFFICIENT_ATTENTION"
+    PYTORCH_SDPA_CUDNN_ATTENTION = "PYTORCH_SDPA_CUDNN_ATTENTION"
 
     # Specific versions of the custom cuda implementation.
     CUSTOM_CUDA_VERSION_1  = "CUSTOM_CUDA_VERSION_1"
@@ -19,6 +23,10 @@ class ScaledDotProductAttentionBackend(Enum):
     CUSTOM_CUDA_VERSION_9  = "CUSTOM_CUDA_VERSION_9"
     CUSTOM_CUDA_VERSION_10 = "CUSTOM_CUDA_VERSION_10"
 
+PYTORCH_SDPA_BACKENDS = [ScaledDotProductAttentionBackend.PYTORCH_SDPA_MATH,
+                         ScaledDotProductAttentionBackend.PYTORCH_SDPA_FLASH_ATTENTION,
+                         ScaledDotProductAttentionBackend.PYTORCH_SDPA_EFFICIENT_ATTENTION,
+                         ScaledDotProductAttentionBackend.PYTORCH_SDPA_CUDNN_ATTENTION]
 
 ALL_VERSIONED_CUSTOM_CUDA_BACKENDS = [ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_1,
                                       ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_2,
@@ -71,12 +79,20 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                  values: torch.Tensor,
                                  num_heads: int,
                                  causal_mask: torch.Tensor) -> torch.Tensor:
-    if backend != ScaledDotProductAttentionBackend.NAIVE_PYTORCH:
+    if (backend == ScaledDotProductAttentionBackend.CUSTOM_CUDA
+        or backend in ALL_VERSIONED_CUSTOM_CUDA_BACKENDS):
         # TODO: support batch size > 1
         # Custom Cuda backend currently requires contiguous tensors.
         queries = queries.contiguous().squeeze(0)
         keys = keys.contiguous().squeeze(0)
         values = values.contiguous().squeeze(0)
+
+    if backend in PYTORCH_SDPA_BACKENDS:
+        batch_size, context_length, model_dim = queries.shape
+        head_dim = model_dim // num_heads
+        queries = queries.view(batch_size, context_length, num_heads, head_dim).transpose(1, 2)  # (batch_size, num_heads, context_length, head_dim)
+        keys = keys.view(batch_size, context_length, num_heads, head_dim).transpose(1, 2)        # (batch_size, num_heads, context_length, head_dim)
+        values = values.view(batch_size, context_length, num_heads, head_dim).transpose(1, 2)    # (batch_size, num_heads, context_length, head_dim)
 
     match backend:
         case ScaledDotProductAttentionBackend.NAIVE_PYTORCH:
@@ -85,6 +101,22 @@ def scaled_dot_product_attention(backend: ScaledDotProductAttentionBackend,
                                                               values=values,
                                                               num_heads=num_heads,
                                                               causal_mask=causal_mask)
+        case ScaledDotProductAttentionBackend.PYTORCH_SDPA_MATH:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                result = torch.nn.functional.scaled_dot_product_attention(query=queries, key=keys, value=values, is_causal=True)
+            return result.transpose(1, 2).view(batch_size, context_length, model_dim)
+        case ScaledDotProductAttentionBackend.PYTORCH_SDPA_FLASH_ATTENTION:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
+                result = torch.nn.functional.scaled_dot_product_attention(query=queries, key=keys, value=values, is_causal=True)
+            return result.transpose(1, 2).view(batch_size, context_length, model_dim)
+        case ScaledDotProductAttentionBackend.PYTORCH_SDPA_EFFICIENT_ATTENTION:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+                result = torch.nn.functional.scaled_dot_product_attention(query=queries, key=keys, value=values, is_causal=True)
+            return result.transpose(1, 2).view(batch_size, context_length, model_dim)
+        case ScaledDotProductAttentionBackend.PYTORCH_SDPA_CUDNN_ATTENTION:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.CUDNN_ATTENTION):
+                result = torch.nn.functional.scaled_dot_product_attention(query=queries, key=keys, value=values, is_causal=True)
+            return result.transpose(1, 2).view(batch_size, context_length, model_dim)
         case ScaledDotProductAttentionBackend.CUSTOM_CUDA:
             return torch.ops.causal_multihead_self_attention.causal_multihead_self_attention_torch(Q=queries, K=keys, V=values, num_heads=num_heads).unsqueeze(0)
         case ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_1:
