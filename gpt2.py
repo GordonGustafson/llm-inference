@@ -134,6 +134,6 @@ if __name__ == "__main__":
                                                   attention_backend=ScaledDotProductAttentionBackend.CUSTOM_CUDA,
                                                   device=torch.device("cuda"),
                                                   prompt="Hello, I'm a language model,",
-                                                  max_tokens=500)
+                                                  max_tokens=512)
     print(f"Inference time: {inference_timing.second_run_execution_time_seconds} seconds")
     print(f"Generated text: {inference_timing.generated_text} seconds")
