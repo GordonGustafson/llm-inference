@@ -9,8 +9,9 @@ from safetensors_utils import assign_weight_and_bias
 import torch
 from torch import nn
 
-import time
 from dataclasses import dataclass
+import sys
+import time
 
 def _assign_transformer_block(block: TransformerBlock, safetensors_object: safe_open, block_index: int) -> None:
     assign_weight_and_bias(block.first_layer_norm, safetensors_object, f"h.{block_index}.ln_1")
@@ -134,8 +135,10 @@ def time_greedy_gpt2_inference(hf_model_name: str,
 
 
 if __name__ == "__main__":
+    attention_backend_raw = sys.argv[1]
+    attention_backend = ScaledDotProductAttentionBackend[attention_backend_raw]
     inference_timing = time_greedy_gpt2_inference(hf_model_name="openai-community/gpt2",
-                                                  attention_backend=ScaledDotProductAttentionBackend.CUSTOM_CUDA,
+                                                  attention_backend=attention_backend,
                                                   device=torch.device("cuda"),
                                                   prompt="Hello, I'm a language model,",
                                                   max_tokens=512)
