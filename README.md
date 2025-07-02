@@ -188,7 +188,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 for i in $(seq 10); do
     pip uninstall -y causal_multihead_self_attention_version_${i};
-    pip install torch_extensions/causal_multihead_self_attention_version_${i};
+    pip install --no-build-isolation torch_extensions/causal_multihead_self_attention_version_${i};
 done
 
 
