@@ -28,11 +28,11 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 #define CEIL_DIV(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
 
-namespace causal_multihead_self_attention {
+namespace causal_multihead_self_attention_version_11 {
 
 // Taken from https://docs.pytorch.org/tutorials/advanced/cpp_custom_ops.html#setting-up-hybrid-python-c-registration,
 // tweaked with https://stackoverflow.com/a/76669141.
-PYBIND11_MODULE(causal_multihead_self_attention, m) {}
+PYBIND11_MODULE(causal_multihead_self_attention_version_11, m) {}
 
 __device__ static inline float onlineSoftmaxSum(float const maxA,
                                                 float const sumA,
@@ -466,13 +466,13 @@ torch::Tensor causal_multihead_self_attention_torch(torch::Tensor Q,
     return output;
 }
 
-TORCH_LIBRARY(causal_multihead_self_attention, m) {
+TORCH_LIBRARY(causal_multihead_self_attention_version_11, m) {
    // Note that "float" in the schema corresponds to the C++ double type
    // and the Python float type.
    m.def("causal_multihead_self_attention_torch(Tensor Q, Tensor K, Tensor V, int num_heads) -> Tensor");
  }
 
-TORCH_LIBRARY_IMPL(causal_multihead_self_attention, CUDA, m) {
+TORCH_LIBRARY_IMPL(causal_multihead_self_attention_version_11, CUDA, m) {
   m.impl("causal_multihead_self_attention_torch", &causal_multihead_self_attention_torch);
 }
 
