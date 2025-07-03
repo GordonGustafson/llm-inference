@@ -18,7 +18,7 @@ We will improve the runtime of this baseline by a few percentage points on an Nv
 
 Code for each CUDA kernel can be found in the `torch_extensions` folder.
 
-Baseline: Naïve PyTorch Implementation: 14.2 Seconds
+Baseline: Naïve PyTorch Implementation: 15.3 Seconds
 ----------------------------------------------------
 
 The attention implementation in PyTorch boils down to this:
@@ -31,7 +31,7 @@ The attention implementation in PyTorch boils down to this:
 ```
 
 
-Version 1: Naïve Flash Attention V1 - 28.9 seconds
+Version 1: Naïve Flash Attention V1 - 30.6 seconds
 --------------------------------------------------
 
 This implementation is based on [Flash Attention V1](https://arxiv.org/abs/2205.14135), with a few optimizations related to causal masking:
@@ -47,16 +47,16 @@ Shared Memory tile size (B_c, B_r): (48, 48)
 (Due to a bug B_c and B_r were set to 48 when they should be set to 64 to make maximum usage of the 64Kb of shared memory on the 1660 Super GPU.)
 
 
-Version 2: Avoid Bank Conflicts Accessing K - 19.1 seconds
+Version 2: Avoid Bank Conflicts Accessing K - 21.0 seconds
 ----------------------------------------------------------
 
 Bank conflicts occur when multiple threads simultaneously access data in the same shared memory bank, leaving one memory bank busy while the others sit idle.
 Since K is stored untransposed with a row size of `d_head=64`, we hit this worst case since each thread reads the leftmost column of K, then the second to leftmost, etc.
 We fix this by adding 4 bytes of padding to each row of K, causing all these accesses to the same column to hit different memory banks.
-This gives us a huge speedup over the previous time of 28.9 seconds.
+This gives us a huge speedup over the previous time of 30.6 seconds.
 
 
-Version 3: Tune Tile Size and ThreadBlock Size - 18.0 seconds
+Version 3: Tune Tile Size and ThreadBlock Size - 19.7 seconds
 -------------------------------------------------------------
 
 ```
@@ -67,13 +67,13 @@ Shared Memory tile size (B_c, B_r): (32, 32)
 Increasing the number of total threads increases throughput, and aligning the shared memory tile size to the threadblock size reduces uncoalesced accesses to shared memory.
 
 
-Version 4: Pass `--use_fast_math` flag to `nvcc` - 16.8 seconds
+Version 4: Pass `--use_fast_math` flag to `nvcc` - 18.6 seconds
 ---------------------------------------------------------------
 
 The `--use_fast_math` flag causes `expf()` to be replaced by the device intrinsic `__expf()`, which is much faster without a noticeable difference in inference accuracy.
 
 
-Version 5: Use Warp Shuffles For Softmax Accumulation - 15.9 seconds
+Version 5: Use Warp Shuffles For Softmax Accumulation - 17.7 seconds
 --------------------------------------------------------------------
 
 Previously we used global memory for coordinating the calculations of the online softmax statistics (the maximum value and the sum of the exponentiated values with the max subtracted).
@@ -81,7 +81,7 @@ Instead we can use intra-warp communication, known as warp shuffles, and save on
 For each S block the online softmax statistics are accumulated onto the first thread in the warp, which then broadcasts to the rest of the threads in the warp.
 
 
-Version 6: Miscellaneous Small Optimizations - 15.4 seconds
+Version 6: Miscellaneous Small Optimizations - 17.3 seconds
 -----------------------------------------------------------
 
 To keep things more concise, we apply three optimization at once in this version.
@@ -95,21 +95,21 @@ The third optimization is adding the `__restrict__` qualifier to the device poin
 On some architectures this enables the load to go through a different cache that only supports read-only data.
 
 
-Version 7: Use Vectorized Loads and Stores - 15.4 seconds
+Version 7: Use Vectorized Loads and Stores - 17.2 seconds
 -------------------------------------------------------
 
 This update uses `float4` loads and stores when possible, which can improve performance by performing fewer load and store instructions since each instruction handles 128 bits instead of 32.
 Unfortunately the runtime improvement is negligible (very small decrease from the previous version).
 
 
-Version 8: Update `O` in Shared Memory - 14.3 seconds
+Version 8: Update `O` in Shared Memory - 15.3 seconds
 -----------------------------------------------------
 
 While the Flash Attention V1 paper opts to maximize the shared memory dedicated to Q, K, V, and S by performing all O updates directly in global memory, I obtained better results by allocating some shared memory to O.
 Computing O in shared memory and only writing it back to global memory at the very end of the kernel lets us avoid the longer latencies of global memory.
 
 
-Version 9: Register Tiling Over Columns - 14.2 seconds
+Version 9: Register Tiling Over Columns - 15.4 seconds
 ------------------------------------------------------
 
 While shared memory has lower latency than global memory, registers have even lower latency than shared memory.
@@ -125,14 +125,14 @@ Register tile size (X, Y): (2, 1)
 ```
 
 
-Version 10: Register Tiling Over Rows - 13.8 seconds
+Version 10: Register Tiling Over Rows - 14.9 seconds
 ----------------------------------------------------
 
 In this version each thread computes 4 values of S and O, 2 per column and 2 per row.
 This further increases our arithmetic intensity, making better use of memory bandwidth.
 To enable this we increase the shared memory tile size in the y-direction from 32 to 64.
 
-This implementation beats our naïve PyTorch baseline of 14.2 seconds!
+This implementation beats our naïve PyTorch baseline of 15.3 seconds!
 
 ```
 blockDim: (16, 32)
@@ -141,7 +141,7 @@ Register tile size (X, Y): (2, 2)
 ```
 
 
-Version 11: Support Non-Contiguous Tensors - 13.6 seconds
+Version 11: Support Non-Contiguous Tensors - 14.7 seconds
 ---------------------------------------------------------
 
 Until now, all the kernels have required that the query, key, and value tensors be contiguous in GPU memory.
@@ -149,7 +149,7 @@ While using vectorized loads requires that the tensors' last dimension have stri
 This doesn't improve the kernel runtime, but it lets us skip the `.contiguous()` calls in the Python code, resuling in a small speedup.
 
 
-Version 12: Move O to Registers, Increase Tile Size - 13.3 seconds
+Version 12: Move O to Registers, Increase Tile Size - 14.3 seconds
 ------------------------------------------------------------------
 
 Since each thread is responsible for computing its own values of O, we can store them in registers to save some shared memory.
@@ -172,10 +172,12 @@ total shm: 64 KB
 ```
 
 
-Third Party Implementation: Efficient Attention - 13.2 seconds
+Third Party Implementation: Efficient Attention - 14.3 seconds
 --------------------------------------------------------------
 
-A professional implementation achieves an even better runtime, indicating that there is still more room for further optimization!
+Our custom cuda implementation ties the performance of the Efficient Attention implementation shipped by PyTorch!
+
+Unfortunately the Flash Attention built into PyTorch doesn't ship a kernel that works on Turing GPUs, so it's not easy to compare performance against the official Flash Attention implementation.
 
 
 Visual Comparison
@@ -190,6 +192,8 @@ Addressing bank conflicts gave the biggest performance improvement with only a s
 
 Vectorized loads with `float4` made the code notably more complex, but delivered very little in terms of performance gains.
 In my next CUDA kernel I'll leave vectorized loads and stores as the last optimization.
+
+Prefer storing data in registers to shared memory when possible.
 
 
 Future Work
@@ -218,7 +222,9 @@ done
 
 
 for attention_backend in NAIVE_PYTORCH CUSTOM_CUDA_VERSION_1 CUSTOM_CUDA_VERSION_2 CUSTOM_CUDA_VERSION_3 CUSTOM_CUDA_VERSION_4 CUSTOM_CUDA_VERSION_5 CUSTOM_CUDA_VERSION_6 CUSTOM_CUDA_VERSION_7 CUSTOM_CUDA_VERSION_8 CUSTOM_CUDA_VERSION_9 CUSTOM_CUDA_VERSION_10 CUSTOM_CUDA_VERSION_11 CUSTOM_CUDA_VERSION_12 PYTORCH_SDPA_EFFICIENT_ATTENTION; do
+    echo "Starting run for $attention_backend";
     python3 gpt2.py $attention_backend;
+    echo "Finished run for $attention_backend";
 done
 ```
 

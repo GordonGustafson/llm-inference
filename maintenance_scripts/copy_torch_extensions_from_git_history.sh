@@ -6,7 +6,7 @@ cd $(git rev-parse --show-toplevel)
 
 OLD_EXTENSION_DIRECTORY=torch_extensions/causal_multihead_self_attention
 
-for i in $(seq 11); do
+for i in $(seq 12); do
     EXTENSION_DIRECTORY=torch_extensions/causal_multihead_self_attention_version_${i}
     mkdir -p ${EXTENSION_DIRECTORY}
     for FILENAME in causal_multihead_self_attention.cu setup.py __init__.py; do
