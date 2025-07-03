@@ -15,6 +15,10 @@
 
 int constexpr NUM_COLS_PER_THREAD = 2;
 int constexpr NUM_ROWS_PER_THREAD = 2;
+int constexpr BLOCK_DIM_X = 16;
+int constexpr BLOCK_DIM_Y = 32;
+int constexpr B_C = 32;
+int constexpr B_R = 64;
 unsigned int constexpr ALL_THREADS_IN_WARP_MASK = 0xffffffffu;
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
@@ -78,16 +82,14 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
     float* const K = Q + B_r * Q_row_length;
     float* const V = K + B_c * K_row_length;
     float* const S = V + B_c * d_head;
-    float* const O = S + B_c * B_r;
     float4* const Q_float4 = reinterpret_cast<float4*>(Q);
     float4* const K_float4 = reinterpret_cast<float4*>(K);
     float4* const V_float4 = reinterpret_cast<float4*>(V);
     float4* const S_float4 = reinterpret_cast<float4*>(S);
-    float4* const O_float4 = reinterpret_cast<float4*>(O);
     float4 const* const Q_HBM_float4 = reinterpret_cast<float4 const*>(Q_HBM_tensor_2D.data_ptr);
     float4 const* const K_HBM_float4 = reinterpret_cast<float4 const*>(K_HBM_tensor_2D.data_ptr);
     float4 const* const V_HBM_float4 = reinterpret_cast<float4 const*>(V_HBM_tensor_2D.data_ptr);
-    float4* const O_HBM_float4 = reinterpret_cast<float4*>(O_HBM_tensor_2D.data_ptr);
+    float2* const O_HBM_float2 = reinterpret_cast<float2*>(O_HBM_tensor_2D.data_ptr);
 
     float4 const zero_float4 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -97,7 +99,6 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
         for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
             int const row_index = blockIdx.x * B_r + B_r_index;
             Q_float4[B_r_index * (Q_row_length/4) + d_index] = Q_HBM_float4[row_index * (((int)Q_HBM_tensor_2D.stride_dim_0) / 4) + (d_min_for_head / 4) + d_index];
-            O_float4[B_r_index * (O_row_length/4) + d_index] = zero_float4;
         }
     }
 
@@ -107,6 +108,22 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
     for (int row = 0; row < NUM_ROWS_PER_THREAD; row++) {
         S_row_old_global_sum[row] = 0.0f;
         S_row_old_global_max[row] = -INFINITY;
+    }
+
+    static_assert(d_head % (BLOCK_DIM_X * NUM_COLS_PER_THREAD) == 0,
+                  "d_head must be divisible by the number of columns processed per block for certain loop unrolling optimizations.");
+    int constexpr numStridesAcrossDHead = d_head / (BLOCK_DIM_X * NUM_COLS_PER_THREAD);
+    float O_registers[numStridesAcrossDHead][NUM_ROWS_PER_THREAD][NUM_COLS_PER_THREAD];
+    // Set O values to 0.
+    #pragma unroll
+    for (int strideAcrossDHead = 0; strideAcrossDHead < numStridesAcrossDHead; strideAcrossDHead++) {
+        #pragma unroll
+        for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
+            #pragma unroll
+            for (int O_reg_col = 0; O_reg_col < NUM_COLS_PER_THREAD; O_reg_col++) {
+                O_registers[strideAcrossDHead][O_reg_row][O_reg_col] = 0.0f;
+            }
+        }
     }
 
     int const shm_tile_top_row_hbm = B_r * blockIdx.x;
@@ -251,7 +268,10 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
 
             if (reg_tile_top_row_shm_in_bounds) {
                 // Compute P and O
-                for (int d_index = threadIdx.x * NUM_COLS_PER_THREAD; d_index < d_head; d_index += blockDim.x * NUM_COLS_PER_THREAD) {
+                // Use numStridesAcrossDHead so the number of loop iterations can be known at compile time.
+                #pragma unroll
+                for (int strideAcrossDHead = 0; strideAcrossDHead < numStridesAcrossDHead; strideAcrossDHead++) {
+                    int const d_index = threadIdx.x * NUM_COLS_PER_THREAD + blockDim.x * NUM_COLS_PER_THREAD * strideAcrossDHead;
                     float PV_registers[NUM_ROWS_PER_THREAD][NUM_COLS_PER_THREAD];
                     // Set O vals to 0.
                     #pragma unroll
@@ -328,8 +348,7 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
                     for (int PV_reg_row = 0; PV_reg_row < NUM_ROWS_PER_THREAD; PV_reg_row++) {
                         #pragma unroll
                         for (int PV_reg_col = 0; PV_reg_col < NUM_COLS_PER_THREAD; PV_reg_col++) {
-                            int const OIndexForThread = (reg_tile_top_row_shm + PV_reg_row) * O_row_length + d_index + PV_reg_col;
-                            O[OIndexForThread] = (O[OIndexForThread] * expf(S_row_old_global_max[PV_reg_row] - S_row_new_global_max[PV_reg_row]) * S_row_old_global_sum[PV_reg_row] + PV_registers[PV_reg_row][PV_reg_col]) / S_row_new_global_sum[PV_reg_row];
+                            O_registers[strideAcrossDHead][PV_reg_row][PV_reg_col] = (O_registers[strideAcrossDHead][PV_reg_row][PV_reg_col] * expf(S_row_old_global_max[PV_reg_row] - S_row_new_global_max[PV_reg_row]) * S_row_old_global_sum[PV_reg_row] + PV_registers[PV_reg_row][PV_reg_col]) / S_row_new_global_sum[PV_reg_row];
                         }
                     }
                 }
@@ -347,10 +366,16 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
     }
 
     // Write O_HBM
-    for (int d_index = threadIdx.x; d_index < d_head / 4; d_index += blockDim.x) {
-        for (int B_r_index = threadIdx.y; B_r_index < B_r_bounds_checked_for_last_row; B_r_index += blockDim.y) {
-            int const row_index = blockIdx.x * B_r + B_r_index;
-            O_HBM_float4[row_index * (((int)O_HBM_tensor_2D.stride_dim_0) / 4) + (d_min_for_head / 4) + d_index] = O_float4[B_r_index * (O_row_length/4) + d_index];
+    #pragma unroll
+    for (int strideAcrossDHead = 0; strideAcrossDHead < numStridesAcrossDHead; strideAcrossDHead++) {
+        int const d_index = threadIdx.x * NUM_COLS_PER_THREAD + strideAcrossDHead * (blockDim.x * NUM_COLS_PER_THREAD);
+        #pragma unroll
+        for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
+            int const row_index = blockIdx.x * B_r + threadIdx.y * NUM_ROWS_PER_THREAD + O_reg_row;
+            if (row_index < N) {
+                float2 const O_reg_float2 = make_float2(O_registers[strideAcrossDHead][O_reg_row][0], O_registers[strideAcrossDHead][O_reg_row][1]);
+                O_HBM_float2[row_index * (((int)O_HBM_tensor_2D.stride_dim_0) / 2) + (d_min_for_head / 2) + (d_index / 2)] = O_reg_float2;
+            }
         }
     }
 }
@@ -369,17 +394,16 @@ void causal_multihead_self_attention(Tensor2D<float const> const Q,  // size Nxd
 
     int const d_head = d_model / num_heads;
 
-    int constexpr B_c = 32;
-    int constexpr B_r = 64;
+    int constexpr B_c = B_C;
+    int constexpr B_r = B_R;
     int const T_r = CEIL_DIV(N, B_r);
 
     dim3 const blocksPerGrid(T_r, num_heads);
-    dim3 const threadsPerBlock(16, 32);
+    dim3 const threadsPerBlock(BLOCK_DIM_X, BLOCK_DIM_Y);
     int const sharedMemoryBytes = (B_r * d_head          // Q
                                    + B_c * (d_head + 4)  // K
                                    + B_c * d_head        // V
-                                   + B_r * B_c           // S
-                                   + B_r * d_head)       // O
+                                   + B_r * B_c)          // S
                                   * sizeof(float);
     if (d_head != 64) {
         throw std::invalid_argument("Head dimension must be 64.");
