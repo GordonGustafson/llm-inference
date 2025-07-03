@@ -13,11 +13,11 @@
 
 #define THREADS_PER_WARP 32
 
-int constexpr NUM_COLS_PER_THREAD = 2;
-int constexpr NUM_ROWS_PER_THREAD = 2;
+int constexpr NUM_COLS_PER_THREAD = 4;
+int constexpr NUM_ROWS_PER_THREAD = 4;
 int constexpr BLOCK_DIM_X = 16;
-int constexpr BLOCK_DIM_Y = 32;
-int constexpr B_C = 32;
+int constexpr BLOCK_DIM_Y = 16;
+int constexpr B_C = 64;
 int constexpr B_R = 64;
 unsigned int constexpr ALL_THREADS_IN_WARP_MASK = 0xffffffffu;
 
@@ -87,7 +87,7 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
     float4 const* const Q_HBM_float4 = reinterpret_cast<float4 const*>(Q_HBM_tensor_2D.data_ptr);
     float4 const* const K_HBM_float4 = reinterpret_cast<float4 const*>(K_HBM_tensor_2D.data_ptr);
     float4 const* const V_HBM_float4 = reinterpret_cast<float4 const*>(V_HBM_tensor_2D.data_ptr);
-    float2* const O_HBM_float2 = reinterpret_cast<float2*>(O_HBM_tensor_2D.data_ptr);
+    float4* const O_HBM_float4 = reinterpret_cast<float4*>(O_HBM_tensor_2D.data_ptr);
 
     float4 const zero_float4 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -371,8 +371,11 @@ __global__ void causal_multihead_self_attention_kernel(Tensor2D<float const> con
         for (int O_reg_row = 0; O_reg_row < NUM_ROWS_PER_THREAD; O_reg_row++) {
             int const row_index = blockIdx.x * B_r + threadIdx.y * NUM_ROWS_PER_THREAD + O_reg_row;
             if (row_index < N) {
-                float2 const O_reg_float2 = make_float2(O_registers[strideAcrossDHead][O_reg_row][0], O_registers[strideAcrossDHead][O_reg_row][1]);
-                O_HBM_float2[row_index * (((int)O_HBM_tensor_2D.stride_dim_0) / 2) + (d_min_for_head / 2) + (d_index / 2)] = O_reg_float2;
+                float4 const O_reg_float4 = make_float4(O_registers[strideAcrossDHead][O_reg_row][0],
+                                                        O_registers[strideAcrossDHead][O_reg_row][1],
+                                                        O_registers[strideAcrossDHead][O_reg_row][2],
+                                                        O_registers[strideAcrossDHead][O_reg_row][3]);
+                O_HBM_float4[row_index * (((int)O_HBM_tensor_2D.stride_dim_0) / 4) + (d_min_for_head / 4) + (d_index / 4)] = O_reg_float4;
             }
         }
     }

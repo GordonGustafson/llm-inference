@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     for attention_backend in [ScaledDotProductAttentionBackend.NAIVE_PYTORCH,
                               ScaledDotProductAttentionBackend.PYTORCH_SDPA_EFFICIENT_ATTENTION,
-                              ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_11]:
+                              ScaledDotProductAttentionBackend.CUSTOM_CUDA_VERSION_12]:
         memory_used = [max_memory_allocated_results[(attention_backend, max_tokens)] for max_tokens in max_tokens_values]
         plt.plot(max_tokens_values, memory_used, label=f"{attention_backend.name}")
 

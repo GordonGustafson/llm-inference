@@ -44,7 +44,7 @@ blockDim: (32, 16)
 Shared Memory tile size (B_c, B_r): (48, 48)
 ```
 
-(Due to a bug B_c and B_r were set to 48 when they should be set to 64 to make maximum usage of the 64Kb of shared memory on the 1660 Super GPU. I will re-run this benchmark when I get time.)
+(Due to a bug B_c and B_r were set to 48 when they should be set to 64 to make maximum usage of the 64Kb of shared memory on the 1660 Super GPU.)
 
 
 Version 2: Avoid Bank Conflicts Accessing K - 19.1 seconds
@@ -140,9 +140,6 @@ Shared Memory tile size (B_c, B_r): (32, 64)
 Register tile size (X, Y): (2, 2)
 ```
 
-Ideally we would use `B_r = B_c = 64`, but with a head dimensionality of 64 and 64Kb of shared memory total on the 1660 S we don't have enough shared memory to also hold O.
-When I tried putting O back in HBM I got worse results, but further experimentation could yield a better configuration (I also had to swizzle K instead of padding it).
-
 
 Version 11: Support Non-Contiguous Tensors - 13.6 seconds
 ---------------------------------------------------------
@@ -152,7 +149,30 @@ While using vectorized loads requires that the tensors' last dimension have stri
 This doesn't improve the kernel runtime, but it lets us skip the `.contiguous()` calls in the Python code, resuling in a small speedup.
 
 
-Third Party Implementation: Efficient Attention - 13.3 seconds
+Version 12: Move O to Registers, Increase Tile Size - 13.3 seconds
+------------------------------------------------------------------
+
+Since each thread is responsible for computing its own values of O, we can store them in registers to save some shared memory.
+We can save a bit more shared memory by alleviating K's bank conflicts with swizzling instead of padding K.
+With swizzling, instead of each thread computing a dot product of Q and K starting at the first element and iterating to the last, the second thread will start at the second element and iterate forward (looping around), the third thread will start at the third element, etc.
+Each thread will still compute the full dot product, but each warp will distribute its loads across different shared memory banks
+
+Together, these two optimization save enough shared memory to fit a 64x64 shared memory tile, which lets us use a 4x4 register tile, which doubles our arithmetic intensity!
+
+```
+blockDim: (16, 16)
+Shared Memory tile size (B_c, B_r): (64, 64)
+Register tile size (X, Y): (4, 4)
+
+Q shm: B_r * d_head * sizeof(float) = 64 * 64 * 4 bytes = 16 KB
+K shm: B_c * d_head * sizeof(float) = 64 * 64 * 4 bytes = 16 KB
+V shm: B_c * d_head * sizeof(float) = 64 * 64 * 4 bytes = 16 KB
+S shm: B_r * B_c    * sizeof(float) = 64 * 64 * 4 bytes = 16 KB
+total shm: 64 KB
+```
+
+
+Third Party Implementation: Efficient Attention - 13.2 seconds
 --------------------------------------------------------------
 
 A professional implementation achieves an even better runtime, indicating that there is still more room for further optimization!
@@ -191,13 +211,13 @@ cd llm-inference
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-for i in $(seq 11); do
+for i in $(seq 12); do
     pip uninstall -y causal_multihead_self_attention_version_${i};
     pip install --no-build-isolation torch_extensions/causal_multihead_self_attention_version_${i};
 done
 
 
-for attention_backend in NAIVE_PYTORCH CUSTOM_CUDA_VERSION_1 CUSTOM_CUDA_VERSION_2 CUSTOM_CUDA_VERSION_3 CUSTOM_CUDA_VERSION_4 CUSTOM_CUDA_VERSION_5 CUSTOM_CUDA_VERSION_6 CUSTOM_CUDA_VERSION_7 CUSTOM_CUDA_VERSION_8 CUSTOM_CUDA_VERSION_9 CUSTOM_CUDA_VERSION_10 CUSTOM_CUDA_VERSION_11 PYTORCH_SDPA_EFFICIENT_ATTENTION; do
+for attention_backend in NAIVE_PYTORCH CUSTOM_CUDA_VERSION_1 CUSTOM_CUDA_VERSION_2 CUSTOM_CUDA_VERSION_3 CUSTOM_CUDA_VERSION_4 CUSTOM_CUDA_VERSION_5 CUSTOM_CUDA_VERSION_6 CUSTOM_CUDA_VERSION_7 CUSTOM_CUDA_VERSION_8 CUSTOM_CUDA_VERSION_9 CUSTOM_CUDA_VERSION_10 CUSTOM_CUDA_VERSION_11 CUSTOM_CUDA_VERSION_12 PYTORCH_SDPA_EFFICIENT_ATTENTION; do
     python3 gpt2.py $attention_backend;
 done
 ```
