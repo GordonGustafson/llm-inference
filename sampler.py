@@ -13,7 +13,6 @@ class GreedySampler:
             text_tensor = tokenizer.encode_to_torch_tensor(prompt, device)
             while next_token != tokenizer.end_token() and text_tensor.shape[1] < max_tokens:
                 token_logits = model(text_tensor)                  # shape: (batch, sequence, vocabulary)
-                print(token_logits.shape)
                 next_token_logits = token_logits[0, -1, :]  # shape: (vocabulary,)
                 next_token = torch.argmax(next_token_logits, dim=0).item()
                 next_token_tensor = torch.tensor([next_token], device=device).unsqueeze(0)
