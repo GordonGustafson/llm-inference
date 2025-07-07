@@ -172,18 +172,30 @@ total shm: 64 KB
 ```
 
 
-Third Party Implementation: Efficient Attention - 14.3 seconds
---------------------------------------------------------------
+Third Party Implementation: Memory Efficient Attention - 14.3 seconds
+---------------------------------------------------------------------
 
-Our custom cuda implementation ties the performance of the Efficient Attention implementation shipped by PyTorch!
+Our custom cuda implementation ties the performance of the Memory Efficient Attention implementation shipped by PyTorch!
 
-Unfortunately the Flash Attention built into PyTorch doesn't ship a kernel that works on Turing GPUs, so it's not easy to compare performance against the official Flash Attention implementation.
+Unfortunately the Flash Attention built into PyTorch doesn't support float32, so it's not easy to compare performance against the official Flash Attention implementation.
 
 
 Visual Comparison
 -----------------
 
 ![Plot of inference times by number of tokens](/images/inference-times-plot.png)
+
+
+FP32 Performance Comparison on Other GPUs
+-----------------------------------------
+
+| Implementation                   | 1660         | 3060        | 4060 Ti     | 5060 Ti     |
+| -------------                    | ------------ | ----------- | ----------- | ----------  |
+| NAIVE_PYTORCH                    | 15.3 seconds | 8.3 seconds | 5.3 seconds | 8.1 seconds |
+| CUSTOM_CUDA_VERSION_12           | 14.3 seconds | 7.6 seconds | 4.5 seconds | 6.4 seconds |
+| PYTORCH_SDPA_EFFICIENT_ATTENTION | 14.3 seconds | 7.6 seconds | 4.5 seconds | 6.4 seconds |
+
+We see very similar results on other GPU architectures, where we also match the float32 performance of the Memory Efficient Attention implementation shipped by PyTorch.
 
 Takeaways
 ---------
@@ -203,7 +215,7 @@ Future Work
 
 **Take advantage of reduced-precision optimizations**.
 
-**Test other GPUs and batch sizes**.
+**Test other batch sizes**.
 
 
 Reproducing
